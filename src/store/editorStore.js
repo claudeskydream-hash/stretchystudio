@@ -45,6 +45,10 @@ export const useEditorStore = create((set) => ({
   /** Sub-mode while in mesh edit mode: 'deform' moves vertices, 'adjust' moves UVs */
   meshSubMode: 'deform',
 
+  /** Brush settings for deform mode */
+  brushSize:     50,  // screen-space radius in pixels
+  brushHardness: 0.5, // 0 = smooth cosine falloff, 1 = uniform hard
+
   setSelection: (nodeIds) => set((state) => ({
     selection: nodeIds,
     // Exit mesh edit mode if selection changes to a different node or clears
@@ -56,6 +60,7 @@ export const useEditorStore = create((set) => ({
   })),
   setMeshEditMode:      (on)       => set({ meshEditMode: on, toolMode: 'select' }),
   setMeshSubMode:       (mode)     => set({ meshSubMode: mode, toolMode: 'select' }),
+  setBrush:             (partial)  => set((s) => ({ brushSize: s.brushSize, brushHardness: s.brushHardness, ...partial })),
   setView:              (view)     => set((state) => ({ view: { ...state.view, ...view } })),
   setToolMode:          (mode)     => set({ toolMode: mode }),
   setDragState:         (ds)       => set((state) => ({ dragState: { ...state.dragState, ...ds } })),

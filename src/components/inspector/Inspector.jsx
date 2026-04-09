@@ -271,6 +271,9 @@ function MeshPanel({ node, onRemesh, onDeleteMesh }) {
   const setMeshSubMode = useEditorStore(s => s.setMeshSubMode);
   const toolMode = useEditorStore(s => s.toolMode);
   const setToolMode = useEditorStore(s => s.setToolMode);
+  const brushSize = useEditorStore(s => s.brushSize);
+  const brushHardness = useEditorStore(s => s.brushHardness);
+  const setBrush = useEditorStore(s => s.setBrush);
   const updateProject = useProjectStore(s => s.updateProject);
 
   const handleDeleteMesh = () => {
@@ -359,6 +362,22 @@ function MeshPanel({ node, onRemesh, onDeleteMesh }) {
                   Adjust
                 </button>
               </div>
+              {meshSubMode === 'deform' && (
+                <div className="space-y-2 pt-0.5">
+                  <SliderRow
+                    label="Brush Size"
+                    value={brushSize}
+                    min={5} max={300} step={1}
+                    onChange={(v) => setBrush({ brushSize: v })}
+                  />
+                  <SliderRow
+                    label="Hardness"
+                    value={Math.round(brushHardness * 100)}
+                    min={0} max={100} step={1}
+                    onChange={(v) => setBrush({ brushHardness: v / 100 })}
+                  />
+                </div>
+              )}
               {meshSubMode === 'adjust' && (
                 <div className="flex gap-1">
                   <Button

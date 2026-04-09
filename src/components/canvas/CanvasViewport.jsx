@@ -46,7 +46,16 @@ function findNearestVertex(vertices, x, y, radius) {
   return best;
 }
 
-/** Check if point (px, py) is inside triangle (v0, v1, v2) */
+/**
+ * Brush falloff weight. t = dist/radius (0=center, 1=edge).
+ * hardness=1 → uniform weight=1; hardness=0 → smooth cosine falloff.
+ */
+function brushWeight(dist, radius, hardness) {
+  const t = dist / radius;
+  if (t >= 1) return 0;
+  const soft = 0.5 * (1 + Math.cos(Math.PI * t));
+  return hardness + (1 - hardness) * soft;
+}
 
 /** Sample alpha (0-255) at integer pixel coords from an ImageData. Returns 0 if out-of-bounds. */
 function sampleAlpha(imageData, lx, ly) {
@@ -97,12 +106,14 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
   const panRef           = useRef(null);   // { startX, startY, panX0, panY0 }
   const isDirtyRef       = useRef(true);
   const pendingPsdRef    = useRef(null);   // { psdW, psdH, layers, partIds } while org modal is open
+  const brushCircleRef   = useRef(null);   // SVG <circle> for brush cursor — mutated directly for perf
 
   const [psdOrgModal, setPsdOrgModal] = useState(false);
 
   const project        = useProjectStore(s => s.project);
   const updateProject  = useProjectStore(s => s.updateProject);
   const editorState    = useEditorStore();
+  const setBrush       = useEditorStore(s => s.setBrush);
   const { setSelection, setView } = editorState;
   const { themeMode, osTheme } = useTheme();
 
@@ -153,6 +164,18 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
   /* ── Mark dirty when editor view / overlays / selection changes ──────── */
   useEffect(() => { isDirtyRef.current = true; },
     [editorState.view, editorState.selection, editorState.overlays, editorState.meshEditMode]);
+
+  /* ── [ / ] brush size shortcuts (only in deform edit mode) ────────────── */
+  useEffect(() => {
+    const handler = (e) => {
+      const { meshEditMode, meshSubMode, brushSize } = editorRef.current;
+      if (!meshEditMode || meshSubMode !== 'deform') return;
+      if (e.key === '[') setBrush({ brushSize: Math.max(5, brushSize - 5) });
+      else if (e.key === ']') setBrush({ brushSize: Math.min(300, brushSize + 5) });
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [setBrush]);
 
   /* ── Mesh worker dispatch ────────────────────────────────────────────── */
   const dispatchMeshWorker = useCallback((partId, imageData, opts) => {
@@ -566,22 +589,35 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
             });
           }
         } else {
-          // Default select tool: start vertex drag
-          const idx = findNearestVertex(selNode.mesh.vertices, lx, ly, 14 / view.zoom);
-          if (idx >= 0) {
+          // Default select tool in deform mode: brush-based multi-vertex drag
+          const { brushSize, brushHardness, meshSubMode } = editorRef.current;
+          const worldRadius = brushSize / view.zoom;
+          const verts = selNode.mesh.vertices;
+          const affected = [];
+          for (let i = 0; i < verts.length; i++) {
+            const dx = verts[i].x - lx, dy = verts[i].y - ly;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const w = meshSubMode === 'deform'
+              ? brushWeight(dist, worldRadius, brushHardness)
+              : (dist <= 14 / view.zoom ? 1 : 0); // adjust: exact vertex pick
+            if (w > 0) affected.push({ index: i, startX: verts[i].x, startY: verts[i].y, weight: w });
+          }
+          if (affected.length > 0 || meshSubMode === 'deform') {
             dragRef.current = {
-              partId:       selNode.id,
-              vertexIndex:  idx,
-              startWorldX:  worldX,
-              startWorldY:  worldY,
-              startLocalX:  selNode.mesh.vertices[idx].x,
-              startLocalY:  selNode.mesh.vertices[idx].y,
-              imageWidth:   selNode.imageWidth,
-              imageHeight:  selNode.imageHeight,
+              mode:          'brush',
+              partId:        selNode.id,
+              startWorldX:   worldX,
+              startWorldY:   worldY,
+              // Snapshot of all vertex positions at drag start (used each frame)
+              verticesSnap:  verts.map(v => ({ ...v })),
+              allUvs:        new Float32Array(selNode.mesh.uvs),
+              imageWidth:    selNode.imageWidth,
+              imageHeight:   selNode.imageHeight,
+              affected,
               iwm,
             };
             canvas.setPointerCapture(e.pointerId);
-            canvas.style.cursor = 'grabbing';
+            canvas.style.cursor = 'crosshair';
           }
         }
       }
@@ -655,25 +691,79 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
       return;
     }
 
-    // Vertex drag
+    // Update brush circle cursor position (direct DOM, no React re-render)
+    if (brushCircleRef.current) {
+      const inDeformMode = editorRef.current.meshEditMode && editorRef.current.meshSubMode === 'deform';
+      if (inDeformMode) {
+        const rect = canvas.getBoundingClientRect();
+        brushCircleRef.current.setAttribute('cx', e.clientX - rect.left);
+        brushCircleRef.current.setAttribute('cy', e.clientY - rect.top);
+        brushCircleRef.current.setAttribute('visibility', 'visible');
+      } else {
+        brushCircleRef.current.setAttribute('visibility', 'hidden');
+      }
+    }
+
+    // Vertex / brush drag
     if (!dragRef.current) return;
     const [worldX, worldY] = clientToCanvasSpace(canvas, e.clientX, e.clientY, view);
+
+    const { meshSubMode } = editorRef.current;
+
+    // ── Brush deform (edit mode, deform sub-mode) ──────────────────────────
+    if (dragRef.current.mode === 'brush') {
+      const { partId, startWorldX, startWorldY, verticesSnap, allUvs, affected,
+              imageWidth, imageHeight, iwm } = dragRef.current;
+
+      const worldDx = worldX - startWorldX;
+      const worldDy = worldY - startWorldY;
+      const localDx = iwm[0] * worldDx + iwm[3] * worldDy;
+      const localDy = iwm[1] * worldDx + iwm[4] * worldDy;
+
+      // Build full vertex array from snapshot with weighted deltas applied
+      const newVerts = verticesSnap.map(v => ({ ...v }));
+      for (const { index, startX, startY, weight } of affected) {
+        if (meshSubMode === 'adjust') {
+          newVerts[index].x = startX + localDx * weight;
+          newVerts[index].y = startY + localDy * weight;
+        } else {
+          newVerts[index].x = startX + localDx * weight;
+          newVerts[index].y = startY + localDy * weight;
+        }
+      }
+
+      // GPU upload from freshly computed data (no stale ref)
+      sceneRef.current?.parts.uploadPositions(partId, newVerts, allUvs);
+      isDirtyRef.current = true;
+
+      // Persist — adjust mode also updates UVs to track position
+      updateProject((proj) => {
+        const node = proj.nodes.find(n => n.id === partId);
+        if (!node?.mesh) return;
+        for (const { index, startX, startY, weight } of affected) {
+          const nx = startX + localDx * weight;
+          const ny = startY + localDy * weight;
+          node.mesh.vertices[index].x = nx;
+          node.mesh.vertices[index].y = ny;
+          if (meshSubMode === 'adjust') {
+            node.mesh.uvs[index * 2]     = nx / (imageWidth  ?? 1);
+            node.mesh.uvs[index * 2 + 1] = ny / (imageHeight ?? 1);
+          }
+        }
+      });
+      return;
+    }
+
+    // ── Single-vertex drag (non-edit-mode path) ────────────────────────────
     const { partId, vertexIndex, startWorldX, startWorldY, startLocalX, startLocalY,
             imageWidth, imageHeight, iwm } = dragRef.current;
 
-    // Compute local-space delta from the world-space delta, applying only the linear
-    // part of the inverse world matrix (rotation/scale), not the translation.
     const worldDx = worldX - startWorldX;
     const worldDy = worldY - startWorldY;
     const localDx = iwm[0] * worldDx + iwm[3] * worldDy;
     const localDy = iwm[1] * worldDx + iwm[4] * worldDy;
 
-    const { meshSubMode } = editorRef.current;
-
     if (meshSubMode === 'adjust') {
-      // ADJUST: move vertex AND update its UV to match the new position, so the
-      // texture tracks with the vertex (no stretching at this vertex — it resamples
-      // the texture at wherever it lands).
       const newLocalX = startLocalX + localDx;
       const newLocalY = startLocalY + localDy;
       updateProject((proj) => {
@@ -685,7 +775,6 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
         node.mesh.uvs[vertexIndex * 2 + 1]     = newLocalY / (imageHeight ?? 1);
       });
     } else {
-      // DEFORM: move the vertex position, keep UVs fixed (texture stretches)
       updateProject((proj) => {
         const node = proj.nodes.find(n => n.id === partId);
         if (!node?.mesh) return;
@@ -698,8 +787,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
     if (scene) {
       const node = projectRef.current.nodes.find(n => n.id === partId);
       if (node?.mesh) {
-        const uvs = new Float32Array(node.mesh.uvs);
-        scene.parts.uploadPositions(partId, node.mesh.vertices, uvs);
+        scene.parts.uploadPositions(partId, node.mesh.vertices, new Float32Array(node.mesh.uvs));
         isDirtyRef.current = true;
       }
     }
@@ -732,11 +820,29 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
       <canvas
         ref={canvasRef}
         className="w-full h-full block"
-        style={{ cursor: toolCursor, touchAction: 'none' }}
+        style={{
+          cursor: editorState.meshEditMode && editorState.meshSubMode === 'deform' ? 'none' : toolCursor,
+          touchAction: 'none',
+        }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onMouseLeave={() => brushCircleRef.current?.setAttribute('visibility', 'hidden')}
       />
+
+      {/* Brush cursor circle — shown in deform edit mode, positioned via direct DOM updates */}
+      <svg className="absolute inset-0 w-full h-full pointer-events-none">
+        <circle
+          ref={brushCircleRef}
+          cx={0} cy={0}
+          r={editorState.brushSize}
+          fill="none"
+          stroke="white"
+          strokeWidth="1"
+          strokeDasharray="4 3"
+          visibility="hidden"
+        />
+      </svg>
 
       {/* Transform gizmo SVG overlay */}
       <GizmoOverlay />
