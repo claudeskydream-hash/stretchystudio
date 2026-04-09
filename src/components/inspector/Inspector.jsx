@@ -123,35 +123,6 @@ function NumericInput({ value, onChange, step = 1, precision = 1, className = ''
   );
 }
 
-/* ── Overlay toggles ──────────────────────────────────────────────────────── */
-
-function OverlayToggles() {
-  const overlays = useEditorStore(s => s.overlays);
-  const setOverlays = useEditorStore(s => s.setOverlays);
-
-  const toggle = (key) => setOverlays({ [key]: !overlays[key] });
-
-  return (
-    <div className="space-y-1">
-      <SectionTitle>Overlays</SectionTitle>
-      {[
-        ['showImage', 'Image'],
-        ['showWireframe', 'Wireframe'],
-        ['showVertices', 'Vertices'],
-        ['showEdgeOutline', 'Edge Outline'],
-      ].map(([key, label]) => (
-        <Row key={key} label={label}>
-          <Switch
-            checked={overlays[key] ?? true}
-            onCheckedChange={() => toggle(key)}
-            className="scale-75 origin-right"
-          />
-        </Row>
-      ))}
-    </div>
-  );
-}
-
 /* ── Node details (part or group) ─────────────────────────────────────────── */
 
 function NodeDetails({ node }) {
@@ -192,16 +163,6 @@ function NodeDetails({ node }) {
         min={0} max={100}
         onChange={(v) => setOpacity(v / 100)}
       />
-      {node.type === 'part' && (
-        <>
-          <Row label="Vertices">
-            <span className="text-xs tabular-nums">{node.mesh?.vertices?.length ?? '—'}</span>
-          </Row>
-          <Row label="Triangles">
-            <span className="text-xs tabular-nums">{node.mesh?.triangles?.length ?? '—'}</span>
-          </Row>
-        </>
-      )}
     </div>
   );
 }
@@ -357,6 +318,18 @@ function MeshPanel({ node, onRemesh, onDeleteMesh }) {
         </div>
       </div>
 
+      {/* Mesh info */}
+      {node.mesh && (
+        <div className="space-y-1">
+          <Row label="Vertices">
+            <span className="text-xs tabular-nums">{node.mesh?.vertices?.length ?? '—'}</span>
+          </Row>
+          <Row label="Triangles">
+            <span className="text-xs tabular-nums">{node.mesh?.triangles?.length ?? '—'}</span>
+          </Row>
+        </div>
+      )}
+
       {!node.mesh && (
         <p className="text-[11px] text-muted-foreground leading-relaxed">
           No mesh. Generate one to enable vertex editing and mesh warp animation.
@@ -452,9 +425,6 @@ export function Inspector({ onRemesh, onDeleteMesh }) {
 
   return (
     <div className="flex flex-col gap-4 p-3 h-full overflow-y-auto">
-      <OverlayToggles />
-      <Separator />
-
       {selectedNode ? (
         <>
           <NodeDetails node={selectedNode} />
