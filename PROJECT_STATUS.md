@@ -109,9 +109,13 @@ Project
   - **Groups Tab**: Tree view, drag-to-reparent, collapsible groups with auto-expand on selection
 - **PSD Auto-Organizer** (`psdOrganizer.js`): Character format detection (head/body/extras groups), canonical draw order
 - **Renderer Integration**: Per-part world matrices, hierarchical transforms work end-to-end
-- **Bugs Fixed**: PSD opacity (was 0), mesh generation (concurrent workers), layer render order, depth tab drag behavior
+- **Mesh Generation Refinements** (`src/mesh/contour.js`, `src/mesh/generate.js`):
+  - **Multi-seed contour tracing**: Traces all separated regions (eyes, arms, etc.) independently, not just the first one
+  - **Boundary dilation**: Edge vertices placed 2px outside visual boundary → mesh covers full image content → texture alpha provides visual clip
+  - **Per-contour vertex distribution**: Allocates `numEdgePoints` proportionally by perimeter across all detected regions
+- **Bugs Fixed**: PSD opacity (was 0), mesh generation (concurrent workers), layer render order, depth tab drag behavior, mesh clipping (chord-shortcut effect), multi-part edge point coverage
 
-**Exit Criteria Met:** Create group → parent layers → rotate group → children rotate around pivot. Depth tab unchanged. Groups tab drag reparents without affecting draw_order.
+**Exit Criteria Met:** Create group → parent layers → rotate group → children rotate around pivot. Depth tab unchanged. Groups tab drag reparents without affecting draw_order. Mesh now covers outer areas without clipping; multiple separated parts all get appropriate edge point coverage.
 
 ---
 
@@ -252,6 +256,7 @@ World matrices computed each frame from node tree + pose overrides. No caching i
 - **Groups have no visual appearance:** Containers only (intentional; may revisit M5+)
 - **Remesh lag:** Large images (>2048px) can freeze UI for ~500ms (acceptable per spec)
 - **PSD edge cases:** CMYK, smart objects, layer effects, complex blend modes not fully validated
+- **Mesh dilation:** Edge vertices are placed 2px outside alpha boundary for chord-shortcut coverage. Very thin features (<4px) may slightly extend beyond visual boundary before texture alpha clips (acceptable trade-off for reliable full-image coverage)
 
 ---
 

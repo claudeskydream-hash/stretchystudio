@@ -6,7 +6,7 @@
  * This is a pure module — no DOM, no classes.
  * Designed to run both on the main thread and inside a Web Worker.
  */
-import { traceContour, resampleContour, smoothContour } from './contour.js';
+import { dilateAlphaMask, traceAllContours, resampleContour, smoothContour } from './contour.js';
 import { sampleInterior, filterByEdgePadding } from './sample.js';
 import { triangulate } from './delaunay.js';
 
@@ -28,8 +28,8 @@ import { triangulate } from './delaunay.js';
  * @param {number}            [opts.alphaThreshold=20]
  * @param {number}            [opts.smoothPasses=3]
  * @param {number}            [opts.gridSpacing=30]
- * @param {number}            [opts.edgePadding=8]
- * @param {number}            [opts.numEdgePoints=80]
+ * @param {number}            [opts.edgePadding=8]    - Min distance interior pts must keep from edge pts
+ * @param {number}            [opts.numEdgePoints=80] - Total edge pts distributed across all contours
  * @returns {MeshResult}
  */
 export function generateMesh(data, width, height, opts = {}) {
@@ -41,18 +41,41 @@ export function generateMesh(data, width, height, opts = {}) {
     numEdgePoints  = 80,
   } = opts;
 
-  // 1. Contour
-  const rawContour = traceContour(data, width, height, alphaThreshold);
-  let edgePts = resampleContour(rawContour, Math.min(numEdgePoints, Math.max(3, rawContour.length)));
-  edgePts = smoothContour(edgePts, smoothPasses);
+  // 1. Dilate alpha mask by 2px so edge vertices land just outside the visual boundary.
+  //    The texture alpha clips the final render, so chord-shortcut gaps are invisible.
+  const contourMask = dilateAlphaMask(data, width, height, alphaThreshold, 2);
 
-  // 2. Interior
+  // 2. Trace all closed contours — one per separated region (eyes, arms, etc.)
+  const contours = traceAllContours(contourMask, width, height);
+
+  // 3. Distribute numEdgePoints across contours proportionally by perimeter
+  const edgePts = [];
+  if (contours.length > 0) {
+    const perimeters = contours.map(c => {
+      let p = 0;
+      for (let i = 0; i < c.length; i++) {
+        const a = c[i], b = c[(i + 1) % c.length];
+        p += Math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2);
+      }
+      return p;
+    });
+    const totalPerimeter = perimeters.reduce((a, b) => a + b, 0);
+
+    for (let ci = 0; ci < contours.length; ci++) {
+      const share = Math.max(3, Math.round(numEdgePoints * perimeters[ci] / totalPerimeter));
+      let pts = resampleContour(contours[ci], Math.min(share, contours[ci].length));
+      pts = smoothContour(pts, smoothPasses);
+      edgePts.push(...pts);
+    }
+  }
+
+  // 4. Interior grid — sampled from original alpha so all regions are filled
   let interiorPts = sampleInterior(data, width, height, alphaThreshold, Math.max(6, gridSpacing));
-  if (edgePadding > 0) {
+  if (edgePadding > 0 && edgePts.length > 0) {
     interiorPts = filterByEdgePadding(interiorPts, edgePts, edgePadding);
   }
 
-  // 3. Combine & deduplicate
+  // 5. Combine & deduplicate
   const allPts = [...edgePts, ...interiorPts];
   const rawEdgeCount = edgePts.length;
   const deduped = [];
@@ -72,17 +95,16 @@ export function generateMesh(data, width, height, opts = {}) {
     }
   }
 
-  // 4. Triangulate
+  // 6. Triangulate
   const triangles = triangulate(deduped);
 
-  // 5. Build output arrays
+  // 7. Build output arrays
   const vertices = deduped.map(([x, y]) => ({
     x, y,
     restX: x,
     restY: y,
   }));
 
-  // UVs: normalize to [0,1] based on image dimensions
   const uvs = new Float32Array(deduped.length * 2);
   for (let i = 0; i < deduped.length; i++) {
     uvs[i * 2]     = deduped[i][0] / width;

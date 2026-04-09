@@ -3,65 +3,94 @@
  * No DOM, no globals. Takes plain typed arrays / objects.
  */
 
-// ─── Alpha buffer helper ──────────────────────────────────────────────────────
+// ─── Alpha mask building & dilation ──────────────────────────────────────────
 
 /**
- * @param {Uint8ClampedArray} data  - Raw RGBA pixel data
- * @param {number}            width
- * @param {number}            height
- * @param {number}            x
- * @param {number}            y
- * @param {number}            threshold
- */
-function isInside(data, width, height, x, y, threshold) {
-  x = Math.max(0, Math.min(width - 1, Math.round(x)));
-  y = Math.max(0, Math.min(height - 1, Math.round(y)));
-  return data[(y * width + x) * 4 + 3] >= threshold;
-}
-
-// ─── Moore-neighbour contour trace ────────────────────────────────────────────
-
-/**
- * Trace the boundary contour of an image using the alpha channel.
+ * Build a binary alpha mask and dilate it by `radius` pixels (L-∞ / separable).
+ * Dilation expands the opaque region outward so edge vertices land just outside
+ * the visual boundary. The texture alpha then clips the rendered result, so the
+ * chord-shortcut effect (straight mesh edges cutting inside a curve) becomes
+ * invisible — the mesh always covers the full image content.
  *
- * @param {Uint8ClampedArray} data            - RGBA pixel data
+ * @param {Uint8ClampedArray} data      - Raw RGBA pixel data
  * @param {number}            width
  * @param {number}            height
- * @param {number}            [alphaThreshold=20]
- * @returns {Array<[number,number]>}           Closed contour point list
+ * @param {number}            threshold - Alpha threshold for "inside"
+ * @param {number}            radius    - Dilation radius in pixels (0 = no change)
+ * @returns {Uint8Array}                 Binary mask (1 = inside after dilation)
  */
-export function traceContour(data, width, height, alphaThreshold = 20) {
-  let startX = -1, startY = -1;
+export function dilateAlphaMask(data, width, height, threshold, radius) {
+  // Build initial binary mask from alpha channel
+  const mask = new Uint8Array(width * height);
+  for (let i = 0; i < width * height; i++) {
+    mask[i] = data[i * 4 + 3] >= threshold ? 1 : 0;
+  }
 
-  outerLoop: for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      if (
-        isInside(data, width, height, x, y, alphaThreshold) &&
-        !isInside(data, width, height, x - 1, y, alphaThreshold)
-      ) {
-        startX = x;
-        startY = y;
-        break outerLoop;
+  if (radius <= 0) return mask;
+
+  // Horizontal max-pooling pass (dilate left/right)
+  const tmp = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let found = false;
+      const x0 = Math.max(0, x - radius);
+      const x1 = Math.min(width - 1, x + radius);
+      for (let nx = x0; nx <= x1 && !found; nx++) {
+        if (mask[y * width + nx]) found = true;
       }
+      tmp[y * width + x] = found ? 1 : 0;
     }
   }
-  if (startX < 0) return [];
 
-  // 8-directional neighbours: E, SE, S, SW, W, NW, N, NE
-  const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  // Vertical max-pooling pass (dilate up/down)
+  const dilated = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let found = false;
+      const y0 = Math.max(0, y - radius);
+      const y1 = Math.min(height - 1, y + radius);
+      for (let ny = y0; ny <= y1 && !found; ny++) {
+        if (tmp[ny * width + x]) found = true;
+      }
+      dilated[y * width + x] = found ? 1 : 0;
+    }
+  }
+
+  return dilated;
+}
+
+// ─── Multi-region contour tracing ─────────────────────────────────────────────
+
+const DIRS = [[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
+
+/**
+ * Trace a single closed boundary starting at (startX, startY).
+ * Marks all visited boundary pixels in `visited` to prevent re-tracing.
+ *
+ * @param {Uint8Array} mask
+ * @param {number}     width
+ * @param {number}     height
+ * @param {number}     startX
+ * @param {number}     startY
+ * @param {Uint8Array} visited  - shared visited array, mutated in place
+ * @returns {Array<[number,number]>}
+ */
+function traceSingleContour(mask, width, height, startX, startY, visited) {
   const contour = [[startX, startY]];
+  visited[startY * width + startX] = 1;
+
   let curX = startX, curY = startY;
-  let prevDir = 6; // start looking from W
+  let prevDir = 6; // start by looking left (same convention as before)
 
   const maxSteps = width * height * 2;
   for (let steps = 0; steps < maxSteps; steps++) {
     let found = false;
     for (let i = 0; i < 8; i++) {
       const dir = (prevDir + 6 + i) % 8;
-      const [dx, dy] = dirs[dir];
+      const [dx, dy] = DIRS[dir];
       const nx = curX + dx, ny = curY + dy;
       if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-      if (isInside(data, width, height, nx, ny, alphaThreshold)) {
+      if (mask[ny * width + nx]) {
         prevDir = dir;
         curX = nx;
         curY = ny;
@@ -71,10 +100,38 @@ export function traceContour(data, width, height, alphaThreshold = 20) {
     }
     if (!found) break;
     if (curX === startX && curY === startY) break;
+    visited[curY * width + curX] = 1;
     contour.push([curX, curY]);
   }
 
   return contour;
+}
+
+/**
+ * Trace all closed boundary contours in a binary mask.
+ * Returns one contour per connected opaque region.
+ *
+ * @param {Uint8Array} mask   - Binary mask from erodeAlphaMask
+ * @param {number}     width
+ * @param {number}     height
+ * @returns {Array<Array<[number,number]>>}  Array of closed contour point lists
+ */
+export function traceAllContours(mask, width, height) {
+  const visited = new Uint8Array(width * height);
+  const contours = [];
+
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const idx = y * width + x;
+      // Start pixel: inside, left neighbor outside, not yet traced
+      if (mask[idx] && !mask[idx - 1] && !visited[idx]) {
+        const contour = traceSingleContour(mask, width, height, x, y, visited);
+        if (contour.length >= 3) contours.push(contour);
+      }
+    }
+  }
+
+  return contours;
 }
 
 // ─── Arc-length resampling ────────────────────────────────────────────────────

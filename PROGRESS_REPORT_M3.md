@@ -114,6 +114,21 @@ M3 delivers a foundational scene graph system with hierarchical parent-child rel
   - Cleaner, drag-focused UX
 - **Status:** ✅ Implemented
 
+### 6. **Mesh Generation: Edge Clipping & Multi-Part Support**
+- **Issue:** Outer areas of sprites were clipped; multiple separated parts (eyes, arms) only got edge points around one region
+- **Root Cause:** 
+  - Moore-neighbor contour tracing only found one contour (first region encountered)
+  - Edge vertices placed directly on alpha boundary caused chord-shortcut effect (straight mesh edges cut inside curves)
+- **Fix:**
+  - **Multi-seed contour tracing:** Scan entire image for all boundary start pixels → traces each separated region independently
+  - **Boundary dilation:** Dilate alpha mask by 2px before tracing → edge vertices land just outside visual boundary → texture alpha clips the result naturally → chord-shortcut gaps become invisible
+  - **Per-contour vertex distribution:** Distribute `numEdgePoints` proportionally by perimeter across all regions
+- **Implementation:** (`src/mesh/contour.js`, `src/mesh/generate.js`)
+  - `dilateAlphaMask()` — separable L-∞ max-pooling (expands opaque region outward)
+  - `traceAllContours()` — returns array of closed paths, one per region
+  - `traceSingleContour()` — Moore-neighbor tracing with visited marking
+- **Status:** ✅ Fixed (post-M3 refinement)
+
 ## 📊 Current Architecture
 
 ```
