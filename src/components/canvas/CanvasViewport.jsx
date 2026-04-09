@@ -511,6 +511,33 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
       .sort((a, b) => (b.draw_order ?? 0) - (a.draw_order ?? 0));
 
     // ── select tool: vertex drag and part selection ──────────────────────
+    // Priority: if the currently selected part has a mesh and the click lands on one of its
+    // vertices, handle it immediately — don't let a different layer's alpha check steal focus.
+    const currentSelection = editorRef.current.selection ?? [];
+    if (currentSelection.length > 0) {
+      const selNode = proj.nodes.find(n => n.id === currentSelection[0] && n.type === 'part' && n.mesh);
+      if (selNode) {
+        const wm  = worldMatrices.get(selNode.id) ?? mat3Identity();
+        const iwm = mat3Inverse(wm);
+        const [lx, ly] = worldToLocal(worldX, worldY, iwm);
+        const idx = findNearestVertex(selNode.mesh.vertices, lx, ly, 14 / view.zoom);
+        if (idx >= 0) {
+          dragRef.current = {
+            partId:       selNode.id,
+            vertexIndex:  idx,
+            startWorldX:  worldX,
+            startWorldY:  worldY,
+            startLocalX:  selNode.mesh.vertices[idx].x,
+            startLocalY:  selNode.mesh.vertices[idx].y,
+            iwm,
+          };
+          canvas.setPointerCapture(e.pointerId);
+          canvas.style.cursor = 'grabbing';
+          return;
+        }
+      }
+    }
+
     for (const node of sortedParts) {
       const wm  = worldMatrices.get(node.id) ?? mat3Identity();
       const iwm = mat3Inverse(wm);
