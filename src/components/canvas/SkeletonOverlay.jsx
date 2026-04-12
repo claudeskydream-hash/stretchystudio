@@ -30,7 +30,7 @@ const JOINT_RADIUS_NORMAL = 5;
 const JOINT_RADIUS_EDIT   = 8;
 
 // Arc handle constants
-const ARC_BONE_ROLES = new Set(['torso', 'head', 'leftArm', 'rightArm', 'leftElbow', 'rightElbow', 'bothArms', 'leftLeg', 'rightLeg', 'leftKnee', 'rightKnee', 'bothLegs']);
+const ARC_BONE_ROLES = new Set(['torso', 'neck', 'head', 'leftArm', 'rightArm', 'leftElbow', 'rightElbow', 'bothArms', 'leftLeg', 'rightLeg', 'leftKnee', 'rightKnee', 'bothLegs']);
 const ARC_RADIUS = 28;      // screen px
 const ARC_SWEEP_DEG = 270;  // coverage
 const ARC_COLOUR = 'rgba(251,191,36,0.55)';

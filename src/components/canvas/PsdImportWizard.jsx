@@ -214,7 +214,7 @@ export default function PsdImportWizard({
                       bg-background/90 border-b border-border backdrop-blur-sm">
         <span className="text-xs font-semibold text-foreground">Adjust Joints</span>
         <span className="text-xs text-muted-foreground flex-1">
-          Drag yellow dots to reposition joints. Click arc handles to rotate bones.
+          Drag yellow dots to reposition joints.
         </span>
         <button
           onClick={onBack}

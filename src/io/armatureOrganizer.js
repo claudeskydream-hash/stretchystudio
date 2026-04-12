@@ -28,6 +28,11 @@ export const KNOWN_TAGS = [
   'tail', 'wings', 'objects',
 ];
 
+// Tags whose layers follow the neck bone.
+const NECK_TAGS = new Set([
+  'neck', 'neckwear',
+]);
+
 // Tags whose layers follow the head bone.
 const HEAD_TAGS = new Set([
   'face', 'front hair', 'back hair', 'headwear',
@@ -36,7 +41,6 @@ const HEAD_TAGS = new Set([
   'eyelash', 'eyelash-l', 'eyelash-r',
   'eyebrow', 'eyebrow-l', 'eyebrow-r',
   'eyewear', 'ears', 'ears-l', 'ears-r', 'earwear',
-  'neck', 'neckwear',
   // V1/V2 collapsed eye layer (full eye composite — no separate eyewhite)
   'eyes', 'eyel', 'eyer',
 ]);
@@ -129,12 +133,14 @@ export function estimateSkeletonFromBounds(layers, psdW, psdH) {
   // Head / Face
   const face = getBbox('face') ?? firstOf(['front hair', 'headwear']);
   if (face) {
-    kp.nose   = { x: face.cx,                   y: face.cy + face.h * 0.08 };
-    kp.lEye   = { x: face.cx - face.w * 0.18,   y: face.cy - face.h * 0.05 };
-    kp.rEye   = { x: face.cx + face.w * 0.18,   y: face.cy - face.h * 0.05 };
-    kp.midEye = { x: face.cx,                   y: face.cy - face.h * 0.05 };
-    kp.lEar   = { x: face.cx - face.w * 0.45,   y: face.cy };
-    kp.rEar   = { x: face.cx + face.w * 0.45,   y: face.cy };
+    kp.nose    = { x: face.cx,                   y: face.cy + face.h * 0.08 };
+    kp.lEye    = { x: face.cx - face.w * 0.18,   y: face.cy - face.h * 0.05 };
+    kp.rEye    = { x: face.cx + face.w * 0.18,   y: face.cy - face.h * 0.05 };
+    kp.midEye  = { x: face.cx,                   y: face.cy - face.h * 0.05 };
+    kp.lEar    = { x: face.cx - face.w * 0.45,   y: face.cy };
+    kp.rEar    = { x: face.cx + face.w * 0.45,   y: face.cy };
+    // Head joint at bottom of face layer
+    kp.headBase = { x: face.cx,                   y: face.y + face.h };
   }
 
   // Torso / Shoulders
@@ -146,6 +152,14 @@ export function estimateSkeletonFromBounds(layers, psdW, psdH) {
     kp.shoulderMid = { x: topwear.cx,                       y: topwear.y + topwear.h * 0.12 };
     kp.spine       = { x: topwear.cx,                       y: topwear.cy };
     kp.waist       = { x: topwear.cx,                       y: topwear.y + topwear.h * 0.85 };
+  } else if (face) {
+    // No topwear: place neck at bottom of face (for bust-only characters)
+    kp.neck        = { x: face.cx,                          y: face.y + face.h };
+    kp.lShoulder   = { x: face.cx - face.w * 0.2,          y: face.y + face.h };
+    kp.rShoulder   = { x: face.cx + face.w * 0.2,          y: face.y + face.h };
+    kp.shoulderMid = { x: face.cx,                          y: face.y + face.h };
+    kp.spine       = { x: face.cx,                          y: face.y + face.h };
+    kp.waist       = { x: face.cx,                          y: face.y + face.h };
   }
 
   // Arms — wrist from handwear bounds, elbow interpolated halfway
@@ -192,6 +206,7 @@ export function estimateSkeletonFromBounds(layers, psdW, psdH) {
   const cx = psdW / 2, cy = psdH / 2;
   if (!kp.pelvis)      kp.pelvis      = { x: cx,              y: cy };
   if (!kp.neck)        kp.neck        = { x: cx,              y: psdH * 0.25 };
+  if (!kp.headBase)    kp.headBase    = { x: cx,              y: psdH * 0.22 };
   if (!kp.lShoulder)   kp.lShoulder   = { x: cx - psdW * 0.15, y: psdH * 0.30 };
   if (!kp.rShoulder)   kp.rShoulder   = { x: cx + psdW * 0.15, y: psdH * 0.30 };
   if (!kp.shoulderMid) kp.shoulderMid = { x: cx,              y: psdH * 0.30 };
@@ -401,8 +416,9 @@ function applyDWPoseKeypoints(kps, psdW, psdH) {
  */
 function boneForTag(tag, groups) {
   if (IRIS_TAGS.has(tag))                             return 'eyes';
+  if (NECK_TAGS.has(tag))                             return 'neck';
   if (HEAD_TAGS.has(tag))                             return 'head';
-  if (tag === 'topwear' || tag === 'neckwear')        return 'torso';
+  if (tag === 'topwear')                              return 'torso';
   if (tag === 'bottomwear')                           return 'root';
   if (tag === 'handwear-l')                           return 'leftArm';
   if (tag === 'handwear-r')                           return 'rightArm';
@@ -429,11 +445,30 @@ function boneForTag(tag, groups) {
 export function buildArmatureNodes(skeleton, groups, layers, partIds, uidFn) {
   const kp = skeleton;
 
+  // Ensure headBase is set from face layer bounding box (DWPose doesn't provide this)
+  if (!kp.headBase) {
+    const tagBboxes = {};
+    layers.forEach(layer => {
+      const tag = matchTag(layer.name);
+      if (!tag || !layer.width || !layer.height) return;
+      if (tagBboxes[tag]) return;
+      const x = layer.x ?? 0, y = layer.y ?? 0;
+      tagBboxes[tag] = { x, y, w: layer.width, h: layer.height, cx: x + layer.width / 2, cy: y + layer.height / 2 };
+    });
+    const face = tagBboxes['face'] ?? tagBboxes['front hair'] ?? tagBboxes['headwear'];
+    if (face) {
+      kp.headBase = { x: face.cx, y: face.y + face.h };
+    }
+  }
+
   /* ── Decide which groups to create ── */
+  const hasNeck = layers.some(l => NECK_TAGS.has(matchTag(l.name)));
+  const hasHead = groups.head || layers.some(l => HEAD_TAGS.has(matchTag(l.name)));
   const needGroup = {
     root:      true,
-    torso:     groups.torso || groups.head,
-    head:      groups.head,
+    torso:     groups.torso || hasNeck || hasHead,
+    neck:      hasNeck || hasHead,
+    head:      hasHead,
     eyes:      layers.some(l => IRIS_TAGS.has(matchTag(l.name))),
     leftArm:   groups.arms === 'split' || (groups.arms === 'partial' && layers.some(l => matchTag(l.name) === 'handwear-l')),
     rightArm:  groups.arms === 'split' || (groups.arms === 'partial' && layers.some(l => matchTag(l.name) === 'handwear-r')),
@@ -451,8 +486,9 @@ export function buildArmatureNodes(skeleton, groups, layers, partIds, uidFn) {
   const pivots = {
     root:      kp.pelvis,
     torso:     kp.waist,        // waist level — above hips, distinct from legs pivot
-    head:      kp.neck,         // base of neck, above shoulder line
-    eyes:      kp.midEye,
+    neck:      kp.neck,         // base of neck, above shoulder line
+    head:      kp.headBase ?? kp.midEye, // bottom of face — where head rotates on neck
+    eyes:      kp.midEye,       // between eyes — iris offset center
     leftArm:   kp.lShoulder,
     rightArm:  kp.rShoulder,
     leftElbow: kp.lElbow,
@@ -467,24 +503,25 @@ export function buildArmatureNodes(skeleton, groups, layers, partIds, uidFn) {
 
   /* ── Parent relationships ── */
   const parentBone = {
-    root:     null,
-    torso:    'root',
-    head:     needGroup.torso ? 'torso' : 'root',
-    eyes:     needGroup.head  ? 'head'  : 'root',
-    leftArm:  needGroup.torso ? 'torso' : 'root',
-    rightArm: needGroup.torso ? 'torso' : 'root',
+    root:      null,
+    torso:     'root',
+    neck:      needGroup.torso ? 'torso' : 'root',
+    head:      needGroup.neck  ? 'neck'  : (needGroup.torso ? 'torso' : 'root'),
+    eyes:      needGroup.head  ? 'head'  : (needGroup.neck ? 'neck' : 'root'),
+    leftArm:   needGroup.torso ? 'torso' : 'root',
+    rightArm:  needGroup.torso ? 'torso' : 'root',
     leftElbow: needGroup.leftArm ? 'leftArm' : (needGroup.torso ? 'torso' : 'root'),
     rightElbow:needGroup.rightArm ? 'rightArm' : (needGroup.torso ? 'torso' : 'root'),
-    bothArms: needGroup.torso ? 'torso' : 'root',
-    leftLeg:  'root',
-    rightLeg: 'root',
-    leftKnee: needGroup.leftLeg ? 'leftLeg' : 'root',
+    bothArms:  needGroup.torso ? 'torso' : 'root',
+    leftLeg:   'root',
+    rightLeg:  'root',
+    leftKnee:  needGroup.leftLeg ? 'leftLeg' : 'root',
     rightKnee: needGroup.rightLeg ? 'rightLeg' : 'root',
-    bothLegs: 'root',
+    bothLegs:  'root',
   };
 
   /* ── Create in parent-before-child order ── */
-  const CREATE_ORDER = ['root','torso','head','eyes','leftArm','rightArm','leftElbow','rightElbow','bothArms','leftLeg','rightLeg','leftKnee','rightKnee','bothLegs'];
+  const CREATE_ORDER = ['root','torso','neck','head','eyes','leftArm','rightArm','leftElbow','rightElbow','bothArms','leftLeg','rightLeg','leftKnee','rightKnee','bothLegs'];
 
   const groupIds = {};
   const groupDefs = [];
@@ -534,7 +571,8 @@ export function buildArmatureNodes(skeleton, groups, layers, partIds, uidFn) {
  */
 export const SKELETON_CONNECTIONS = [
   ['root',  'torso'],
-  ['torso', 'head'],
+  ['torso', 'neck'],
+  ['neck',  'head'],
   ['head',  'eyes'],
   ['torso', 'leftArm'],
   ['torso', 'rightArm'],
