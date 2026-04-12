@@ -447,6 +447,7 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
 
   const circles = [];
   for (const [role, node] of Object.entries(boneNodes)) {
+    if (role === 'root') continue;
     const [cx, cy] = pivotScreenPos(node);
     const isDragging = dragRef.current?.nodeId === node.id;
     const fill = isDragging ? COLOUR_DRAG : (skeletonEditMode ? COLOUR_EDIT : COLOUR_NORMAL);

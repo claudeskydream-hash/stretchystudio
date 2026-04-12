@@ -570,7 +570,6 @@ export function buildArmatureNodes(skeleton, groups, layers, partIds, uidFn) {
  * Each entry is [fromBoneRole, toBoneRole].
  */
 export const SKELETON_CONNECTIONS = [
-  ['root',  'torso'],
   ['torso', 'neck'],
   ['neck',  'head'],
   ['head',  'eyes'],
@@ -578,13 +577,13 @@ export const SKELETON_CONNECTIONS = [
   ['torso', 'rightArm'],
   ['leftArm', 'leftElbow'],
   ['rightArm', 'rightElbow'],
-  ['root',  'leftLeg'],
-  ['root',  'rightLeg'],
+  ['torso',  'leftLeg'],
+  ['torso',  'rightLeg'],
   ['leftLeg', 'leftKnee'],
   ['rightLeg', 'rightKnee'],
   // merged variants
   ['torso', 'bothArms'],
-  ['root',  'bothLegs'],
+  ['torso',  'bothLegs'],
 ];
 
 /**

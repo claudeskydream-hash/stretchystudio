@@ -659,6 +659,12 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
     });
   }, [updateProject]);
 
+  /* ── Wizard: cancel import (called by PsdImportWizard) ─────────────────── */
+  const handleWizardCancel = useCallback(() => {
+    setWizardPsd(null);
+    setWizardStep(null);
+  }, []);
+
   /* ── Wizard: finalize with rig (called by PsdImportWizard) ──────────────── */
   const handleWizardFinalize = useCallback((groupDefs, assignments) => {
     const { psdW, psdH, layers, partIds } = wizardPsd;
@@ -1291,6 +1297,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
           onnxSessionRef={onnxSessionRef}
           onFinalize={handleWizardFinalize}
           onSkip={handleWizardSkip}
+          onCancel={handleWizardCancel}
           onComplete={handleWizardComplete}
           onBack={handleWizardBack}
           onSplitArms={handleWizardSplitArms}

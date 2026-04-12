@@ -14,6 +14,7 @@ export default function PsdImportWizard({
   onnxSessionRef,
   onFinalize,
   onSkip,
+  onCancel,
   onComplete,
   onBack,
   onSplitArms,  // (rightLayer, leftLayer) → void  — replaces merged handwear with two layers
@@ -29,25 +30,25 @@ export default function PsdImportWizard({
   /* ── Effective layers: apply tag overrides by renaming to canonical tag ── */
   const effectiveLayers = layers
     ? layers.map(l =>
-        tagOverrides[l.name] ? { ...l, name: tagOverrides[l.name] } : l
-      )
+      tagOverrides[l.name] ? { ...l, name: tagOverrides[l.name] } : l
+    )
     : [];
 
   const matchCount = effectiveLayers.filter(l => matchTag(l.name) !== null).length;
   const unmatchedLayers = layers
     ? layers.filter(l => {
-        const effective = tagOverrides[l.name] ?? null;
-        if (effective !== null) return false; // user-assigned
-        return matchTag(l.name) === null;
-      })
+      const effective = tagOverrides[l.name] ?? null;
+      if (effective !== null) return false; // user-assigned
+      return matchTag(l.name) === null;
+    })
     : [];
   const tooFew = matchCount < 4;
 
   /* ── Detect merged arms (handwear present but no handwear-l or handwear-r) ── */
-  const hasHandwear  = effectiveLayers.some(l => matchTag(l.name) === 'handwear');
+  const hasHandwear = effectiveLayers.some(l => matchTag(l.name) === 'handwear');
   const hasHandwearL = effectiveLayers.some(l => matchTag(l.name) === 'handwear-l');
   const hasHandwearR = effectiveLayers.some(l => matchTag(l.name) === 'handwear-r');
-  const armsMerged   = hasHandwear && !hasHandwearL && !hasHandwearR;
+  const armsMerged = hasHandwear && !hasHandwearL && !hasHandwearR;
 
   /* ── Handle tag override dropdown change ────────────────────────────────── */
   const handleTagChange = useCallback((layerName, value) => {
@@ -144,22 +145,22 @@ export default function PsdImportWizard({
     // Build replacement layers
     const rightLayer = result.right ? {
       ...mergedLayer,
-      name:      'handwear-r',
+      name: 'handwear-r',
       imageData: result.right.imageData,
-      x:         result.right.x,
-      y:         result.right.y,
-      width:     result.right.width,
-      height:    result.right.height,
+      x: result.right.x,
+      y: result.right.y,
+      width: result.right.width,
+      height: result.right.height,
     } : null;
 
     const leftLayer = result.left ? {
       ...mergedLayer,
-      name:      'handwear-l',
+      name: 'handwear-l',
       imageData: result.left.imageData,
-      x:         result.left.x,
-      y:         result.left.y,
-      width:     result.left.width,
-      height:    result.left.height,
+      x: result.left.x,
+      y: result.left.y,
+      width: result.left.width,
+      height: result.left.height,
     } : null;
 
     onSplitArms(mergedIdx, rightLayer, leftLayer);
@@ -170,10 +171,10 @@ export default function PsdImportWizard({
   if (step === 'review') {
     const layerMappings = layers
       ? layers.map(l => ({
-          layer: l,
-          tag: tagOverrides[l.name] ?? matchTag(l.name),
-          overridden: l.name in tagOverrides,
-        }))
+        layer: l,
+        tag: tagOverrides[l.name] ?? matchTag(l.name),
+        overridden: l.name in tagOverrides,
+      }))
       : [];
 
     const hasWarnings = unmatchedLayers.length > 0;
@@ -278,19 +279,27 @@ export default function PsdImportWizard({
           )}
 
           {/* Footer */}
-          <div className="flex items-center justify-between border-t border-border pt-3 gap-2">
+          <div className="flex items-center justify-between border-t border-border pt-3 gap-1.5">
             <button
-              onClick={onSkip}
+              onClick={onCancel}
               className="px-3 py-1.5 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
-              Skip rigging
+              Cancel Import
             </button>
-            <button
-              onClick={handleContinue}
-              className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium"
-            >
-              Continue →
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={onSkip}
+                className="px-3 py-1.5 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0"
+              >
+                Skip rigging
+              </button>
+              <button
+                onClick={handleContinue}
+                className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium shrink-0"
+              >
+                Continue →
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -320,7 +329,7 @@ export default function PsdImportWizard({
                 independently control depth, transform, and deformation for each arm.
               </p>
               <p className="mt-1.5 text-xs text-primary/80 font-medium">
-                Recommended — works best when both gloves are visually separate.
+                Recommended — works best when both arms are visually separate.
               </p>
             </div>
           </div>
