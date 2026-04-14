@@ -1043,10 +1043,44 @@ export async function generateCmo3(input) {
     x.sub(rotDf, 'b', { 'xs.n': 'useBoneUi_testImpl' }).text = 'true';
 
     // Single keyform: rest pose (angle=0 because vertex positions are already in canvas space)
-    // Origin = group's position + pivot (where the rotation handle appears in Editor)
+    // Origin priority: SS group pivot (if set) → center of descendant meshes → canvas center
+    const hasPivot = (t.pivotX || t.pivotY) && (t.pivotX !== 0 || t.pivotY !== 0);
+    let originX, originY;
+    if (hasPivot) {
+      originX = (t.x ?? 0) + (t.pivotX ?? 0);
+      originY = (t.y ?? 0) + (t.pivotY ?? 0);
+    } else {
+      // Collect ALL descendant group IDs (recursive)
+      const descendantIds = new Set([g.id]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const g2 of groups) {
+          if (!descendantIds.has(g2.id) && g2.parent && descendantIds.has(g2.parent)) {
+            descendantIds.add(g2.id);
+            changed = true;
+          }
+        }
+      }
+      // Find all meshes belonging to this group or any descendant
+      const descMeshes = meshes.filter(m => m.parentGroupId && descendantIds.has(m.parentGroupId));
+      if (descMeshes.length > 0) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const gm of descMeshes) {
+          for (let vi = 0; vi < gm.vertices.length; vi += 2) {
+            const vx = gm.vertices[vi], vy = gm.vertices[vi + 1];
+            if (vx < minX) minX = vx; if (vy < minY) minY = vy;
+            if (vx > maxX) maxX = vx; if (vy > maxY) maxY = vy;
+          }
+        }
+        originX = (minX + maxX) / 2;
+        originY = (minY + maxY) / 2;
+      } else {
+        originX = canvasW / 2;
+        originY = canvasH / 2;
+      }
+    }
     const angle = 0;
-    const originX = (t.x ?? 0) + (t.pivotX ?? 0);
-    const originY = (t.y ?? 0) + (t.pivotY ?? 0);
 
     const kfsDf = x.sub(rotDf, 'carray_list', { 'xs.n': 'keyforms', count: '1' });
     const rdf = x.sub(kfsDf, 'CRotationDeformerForm', {
