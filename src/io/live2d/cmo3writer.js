@@ -464,7 +464,7 @@ function crc32Buf(data) {
  * Generate a .cmo3 file (CAFF archive containing main.xml + PNG textures).
  *
  * @param {Cmo3Input} input
- * @returns {Promise<Uint8Array>} Complete .cmo3 file
+ * @returns {Promise<{cmo3: Uint8Array, deformerParamMap: Map<string, {paramId: string, min: number, max: number}>}>}
  */
 export async function generateCmo3(input) {
   const {
@@ -1057,6 +1057,12 @@ export async function generateCmo3(input) {
 
   const groupDeformerGuids = new Map(); // groupId → pidDeformerGuid
   const allDeformerSources = []; // pidDeformerSource for CDeformerSourceSet
+  // Exported: groupId → parameter ID string (for animation export)
+  const deformerParamMap = new Map(); // groupId → { paramId, min, max }
+
+  // Default rotation range for generic parameter bindings (Approach B from Session 8 prompt)
+  const DEFORMER_ANGLE_MIN = -30;
+  const DEFORMER_ANGLE_MAX = 30;
 
   for (const g of groups) {
     const t = g.transform || {};
@@ -1064,20 +1070,80 @@ export async function generateCmo3(input) {
     const [, pidDfGuid] = x.shared('CDeformerGuid', { uuid: uuid(), note: `Rot_${g.name || g.id}` });
     groupDeformerGuids.set(g.id, pidDfGuid);
 
-    const [, pidDfForm] = x.shared('CFormGuid', { uuid: uuid(), note: `RotForm_${g.name || g.id}` });
+    // 3 keyforms: angle at min, angle at default (0), angle at max
+    const [, pidDfFormMin] = x.shared('CFormGuid', { uuid: uuid(), note: `RotForm_${g.name}_min` });
+    const [, pidDfFormDef] = x.shared('CFormGuid', { uuid: uuid(), note: `RotForm_${g.name}_def` });
+    const [, pidDfFormMax] = x.shared('CFormGuid', { uuid: uuid(), note: `RotForm_${g.name}_max` });
+
+    // Parameter for this deformer: ParamRotation_GroupName
+    const sanitizedName = (g.name || g.id).replace(/[^a-zA-Z0-9_]/g, '_');
+    const rotParamId = `ParamRotation_${sanitizedName}`;
+    const [, pidRotParam] = x.shared('CParameterGuid', { uuid: uuid(), note: rotParamId });
+    paramDefs.push({
+      pid: pidRotParam, id: rotParamId, name: `Rotation ${g.name || g.id}`,
+      min: DEFORMER_ANGLE_MIN, max: DEFORMER_ANGLE_MAX, defaultVal: 0,
+      decimalPlaces: 1,
+    });
+    deformerParamMap.set(g.id, {
+      paramId: rotParamId, min: DEFORMER_ANGLE_MIN, max: DEFORMER_ANGLE_MAX,
+    });
 
     // CoordType for this deformer (Canvas coordinates)
     const [coordDf, pidCoordDf] = x.shared('CoordType');
     x.sub(coordDf, 's', { 'xs.n': 'coordName' }).text = 'Canvas';
 
-    // KeyformGridSource (1 keyform, no parameter binding — rest pose)
+    // KeyformBindingSource — links this deformer to its rotation parameter
+    const [kfBinding, pidKfBinding] = x.shared('KeyformBindingSource');
+
+    // KeyformGridSource (3 keyforms, 1 parameter binding)
     const [kfgDf, pidKfgDf] = x.shared('KeyformGridSource');
-    const kfogDf = x.sub(kfgDf, 'array_list', { 'xs.n': 'keyformsOnGrid', count: '1' });
-    const kogDf = x.sub(kfogDf, 'KeyformOnGrid');
-    const akDf = x.sub(kogDf, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
-    x.sub(akDf, 'array_list', { 'xs.n': '_keyOnParameterList', count: '0' });
-    x.subRef(kogDf, 'CFormGuid', pidDfForm, { 'xs.n': 'keyformGuid' });
-    x.sub(kfgDf, 'array_list', { 'xs.n': 'keyformBindings', count: '0' });
+    const kfogDf = x.sub(kfgDf, 'array_list', { 'xs.n': 'keyformsOnGrid', count: '3' });
+
+    // KeyformOnGrid[0] — angle at min
+    const kog0 = x.sub(kfogDf, 'KeyformOnGrid');
+    const ak0 = x.sub(kog0, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
+    const kop0 = x.sub(ak0, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
+    const kon0 = x.sub(kop0, 'KeyOnParameter');
+    x.subRef(kon0, 'KeyformBindingSource', pidKfBinding, { 'xs.n': 'binding' });
+    x.sub(kon0, 'i', { 'xs.n': 'keyIndex' }).text = '0';
+    x.subRef(kog0, 'CFormGuid', pidDfFormMin, { 'xs.n': 'keyformGuid' });
+
+    // KeyformOnGrid[1] — angle at default (0)
+    const kog1 = x.sub(kfogDf, 'KeyformOnGrid');
+    const ak1 = x.sub(kog1, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
+    const kop1 = x.sub(ak1, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
+    const kon1 = x.sub(kop1, 'KeyOnParameter');
+    x.subRef(kon1, 'KeyformBindingSource', pidKfBinding, { 'xs.n': 'binding' });
+    x.sub(kon1, 'i', { 'xs.n': 'keyIndex' }).text = '1';
+    x.subRef(kog1, 'CFormGuid', pidDfFormDef, { 'xs.n': 'keyformGuid' });
+
+    // KeyformOnGrid[2] — angle at max
+    const kog2 = x.sub(kfogDf, 'KeyformOnGrid');
+    const ak2 = x.sub(kog2, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
+    const kop2 = x.sub(ak2, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
+    const kon2 = x.sub(kop2, 'KeyOnParameter');
+    x.subRef(kon2, 'KeyformBindingSource', pidKfBinding, { 'xs.n': 'binding' });
+    x.sub(kon2, 'i', { 'xs.n': 'keyIndex' }).text = '2';
+    x.subRef(kog2, 'CFormGuid', pidDfFormMax, { 'xs.n': 'keyformGuid' });
+
+    // keyformBindings list
+    const kfbList = x.sub(kfgDf, 'array_list', { 'xs.n': 'keyformBindings', count: '1' });
+    x.subRef(kfbList, 'KeyformBindingSource', pidKfBinding);
+
+    // Fill KeyformBindingSource (circular ref with KeyformGridSource — matches Hiyori)
+    x.subRef(kfBinding, 'KeyformGridSource', pidKfgDf, { 'xs.n': '_gridSource' });
+    x.subRef(kfBinding, 'CParameterGuid', pidRotParam, { 'xs.n': 'parameterGuid' });
+    const keysArr = x.sub(kfBinding, 'array_list', {
+      'xs.n': 'keys', count: '3',
+    });
+    x.sub(keysArr, 'f').text = String(DEFORMER_ANGLE_MIN) + '.0';
+    x.sub(keysArr, 'f').text = '0.0';
+    x.sub(keysArr, 'f').text = String(DEFORMER_ANGLE_MAX) + '.0';
+    x.sub(kfBinding, 'InterpolationType', { 'xs.n': 'interpolationType', v: 'LINEAR' });
+    x.sub(kfBinding, 'ExtendedInterpolationType', { 'xs.n': 'extendedInterpolationType', v: 'LINEAR' });
+    x.sub(kfBinding, 'i', { 'xs.n': 'insertPointCount' }).text = '1';
+    x.sub(kfBinding, 'f', { 'xs.n': 'extendedInterpolationScale' }).text = '1.0';
+    x.sub(kfBinding, 's', { 'xs.n': 'description' }).text = rotParamId;
 
     // Determine parent deformer: parent group's deformer or ROOT
     const parentDfGuid = g.parent && groupDeformerGuids.has(g.parent)
@@ -1107,7 +1173,7 @@ export async function generateCmo3(input) {
     x.sub(acpcs, 'null', { 'xs.n': 'internalColor_direct_argb' });
     x.sub(acpcs, 'null', { 'xs.n': 'internalColor_indirect_argb' });
     x.subRef(acdfs, 'CDeformerGuid', pidDfGuid, { 'xs.n': 'guid' });
-    const dfIdStr = `Rotation_${(g.name || g.id).replace(/[^a-zA-Z0-9_]/g, '_')}`;
+    const dfIdStr = `Rotation_${sanitizedName}`;
     x.sub(acdfs, 'CDeformerId', { 'xs.n': 'id', idstr: dfIdStr });
     x.subRef(acdfs, 'CDeformerGuid', parentDfGuid, { 'xs.n': 'targetDeformerGuid' });
 
@@ -1122,33 +1188,43 @@ export async function generateCmo3(input) {
       : { x: 0, y: 0 }; // ROOT = canvas origin (0,0)
     const originX = worldOrigin.x - parentWorldOrigin.x;
     const originY = worldOrigin.y - parentWorldOrigin.y;
-    const angle = 0;
 
-    const kfsDf = x.sub(rotDf, 'carray_list', { 'xs.n': 'keyforms', count: '1' });
-    const rdf = x.sub(kfsDf, 'CRotationDeformerForm', {
-      angle: String(angle),
-      originX: originX.toFixed(1),
-      originY: originY.toFixed(1),
-      scale: '1.0',
-      isReflectX: 'false',
-      isReflectY: 'false',
-    });
-    const adfSuper = x.sub(rdf, 'ACDeformerForm', { 'xs.n': 'super' });
-    const acfDf = x.sub(adfSuper, 'ACForm', { 'xs.n': 'super' });
-    x.subRef(acfDf, 'CFormGuid', pidDfForm, { 'xs.n': 'guid' });
-    x.sub(acfDf, 'b', { 'xs.n': 'isAnimatedForm' }).text = 'false';
-    x.sub(acfDf, 'b', { 'xs.n': 'isLocalAnimatedForm' }).text = 'false';
-    x.subRef(acfDf, 'CRotationDeformerSource', pidRotDf, { 'xs.n': '_source' });
-    x.sub(acfDf, 'null', { 'xs.n': 'name' });
-    x.sub(acfDf, 's', { 'xs.n': 'notes' }).text = '';
-    x.sub(adfSuper, 'f', { 'xs.n': 'opacity' }).text = '1.0';
-    x.sub(adfSuper, 'CFloatColor', {
-      'xs.n': 'multiplyColor', red: '1.0', green: '1.0', blue: '1.0', alpha: '1.0',
-    });
-    x.sub(adfSuper, 'CFloatColor', {
-      'xs.n': 'screenColor', red: '0.0', green: '0.0', blue: '0.0', alpha: '1.0',
-    });
-    x.subRef(adfSuper, 'CoordType', pidCoordDf, { 'xs.n': 'coordType' });
+    // 3 keyforms: min angle, default (0), max angle
+    // All share the same origin (origin changes are rare — Hiyori does it for some deformers
+    // but for generic export, keeping origin constant across keyforms is correct)
+    const kfsDf = x.sub(rotDf, 'carray_list', { 'xs.n': 'keyforms', count: '3' });
+
+    // Helper to emit one CRotationDeformerForm
+    const emitRotForm = (formGuidPid, angle) => {
+      const rdf = x.sub(kfsDf, 'CRotationDeformerForm', {
+        angle: angle.toFixed(1),
+        originX: originX.toFixed(1),
+        originY: originY.toFixed(1),
+        scale: '1.0',
+        isReflectX: 'false',
+        isReflectY: 'false',
+      });
+      const adfSuper = x.sub(rdf, 'ACDeformerForm', { 'xs.n': 'super' });
+      const acfDf = x.sub(adfSuper, 'ACForm', { 'xs.n': 'super' });
+      x.subRef(acfDf, 'CFormGuid', formGuidPid, { 'xs.n': 'guid' });
+      x.sub(acfDf, 'b', { 'xs.n': 'isAnimatedForm' }).text = 'false';
+      x.sub(acfDf, 'b', { 'xs.n': 'isLocalAnimatedForm' }).text = 'false';
+      x.subRef(acfDf, 'CRotationDeformerSource', pidRotDf, { 'xs.n': '_source' });
+      x.sub(acfDf, 'null', { 'xs.n': 'name' });
+      x.sub(acfDf, 's', { 'xs.n': 'notes' }).text = '';
+      x.sub(adfSuper, 'f', { 'xs.n': 'opacity' }).text = '1.0';
+      x.sub(adfSuper, 'CFloatColor', {
+        'xs.n': 'multiplyColor', red: '1.0', green: '1.0', blue: '1.0', alpha: '1.0',
+      });
+      x.sub(adfSuper, 'CFloatColor', {
+        'xs.n': 'screenColor', red: '0.0', green: '0.0', blue: '0.0', alpha: '1.0',
+      });
+      x.subRef(adfSuper, 'CoordType', pidCoordDf, { 'xs.n': 'coordType' });
+    };
+
+    emitRotForm(pidDfFormMin, DEFORMER_ANGLE_MIN);
+    emitRotForm(pidDfFormDef, 0);
+    emitRotForm(pidDfFormMax, DEFORMER_ANGLE_MAX);
 
     x.sub(rotDf, 'f', { 'xs.n': 'handleLengthOnCanvas' }).text = '200.0';
     x.sub(rotDf, 'f', { 'xs.n': 'circleRadiusOnCanvas' }).text = '100.0';
@@ -1556,5 +1632,6 @@ export async function generateCmo3(input) {
     compress: COMPRESS_FAST,
   });
 
-  return packCaff(caffFiles, 42);
+  const cmo3 = await packCaff(caffFiles, 42);
+  return { cmo3, deformerParamMap };
 }

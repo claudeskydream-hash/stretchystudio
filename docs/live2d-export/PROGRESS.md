@@ -1,6 +1,6 @@
 # Live2D Export — Progress Tracker
 
-## Current Status: Phase 2 Complete + Deformers (Session 7, 2026-04-15)
+## Current Status: Phase 2 Complete + Parameter Bindings (Session 8, 2026-04-15)
 
 ---
 
@@ -64,10 +64,18 @@ Key bugs fixed: field name swap (vertex_counts/position_index_counts), keyform b
 - [x] Dual-position system: keyform positions in deformer-local, base positions in canvas space
 - [x] **Confirmed in Cubism Editor 5.0** — rotation controllers move limbs correctly
 
-## Phase 3: Animation Export -- NOT STARTED
+### Session 8: Parameter bindings + animation wiring
+- [x] Each rotation deformer bound to `ParamRotation_GroupName` parameter (range [-30, +30])
+- [x] 3 keyforms per deformer: angle=-30°, angle=0° (rest), angle=+30°
+- [x] KeyformBindingSource + KeyformGridSource structure matching Hiyori pattern
+- [x] motion3json: rotation animation tracks mapped to ParamRotation_* parameter IDs
+- [x] exporter.js builds parameterMap and passes to generateMotion3Json
+- [x] **Confirmed in Cubism Editor 5.0** — parameter sliders control deformer rotation
+
+## Phase 3: Animation Export -- IN PROGRESS
 
 - [x] .motion3.json generator exists (runtime export)
-- [ ] Parameters from animation tracks (rotation → ParamRotation_GroupName)
+- [x] Parameters from animation tracks (rotation → ParamRotation_GroupName)
 - [ ] Verify .motion3.json works with Ren'Py playback
 - [ ] Animation embedding in .cmo3
 - [ ] Warp deformers for mesh vertex animations

@@ -30,7 +30,10 @@ Crop parts to opaque bounds, binary-search for max uniform scale factor, pack wi
 ### ADR-008: Single-PSD texture pattern (.cmo3)
 Session 4 discovery: Cubism Editor requires ONE CLayeredImage with N CLayers inside one CLayerGroup. N separate CLayeredImages = geometry visible but NO textures. See [CMO3_FORMAT.md](CMO3_FORMAT.md) for details.
 
-### ADR-009: Part hierarchy mapping (.cmo3)
+### ADR-009: Generic parameter bindings for rotation deformers (Session 8)
+Each rotation deformer gets a `ParamRotation_GroupName` parameter with range [-30, +30] and 3 keyforms (angle at -30°, 0°, +30°). This is "Approach B" from the session prompt — generic ranges that give the user a controllable model immediately. Hiyori uses tuned per-deformer ranges, but generic ranges let users adjust in Editor. The `KeyformBindingSource` structure matches Hiyori exactly (circular ref with `KeyformGridSource`, `KeyOnParameter` with keyIndex, LINEAR interpolation).
+
+### ADR-010: Part hierarchy mapping (.cmo3)
 Session 5: Stretchy Studio groups map to CPartSource with nested parent-child relationships. Root Part → CPartGuid children (groups) → CDrawableGuid children (meshes). Meshes without a group go directly under Root Part.
 
 ---

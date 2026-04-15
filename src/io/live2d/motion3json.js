@@ -105,8 +105,8 @@ function resolveTrackMapping(track, parameterMap) {
     return { target: 'PartOpacity', id: track.nodeId };
   }
 
-  // Properties like x, y, rotation, scaleX, scaleY need parameter mapping
-  // to be useful. Without it, skip them for now.
+  // Properties like x, y, rotation, scaleX, scaleY need explicit parameterMap
+  // entries to be useful (rotation is mapped via groupId.rotation → ParamRotation_*).
   return null;
 }
 

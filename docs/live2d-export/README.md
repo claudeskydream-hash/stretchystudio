@@ -8,8 +8,8 @@ Export Stretchy Studio projects to Live2D Cubism format — both runtime (.moc3)
 |-------|-------------|--------|
 | Phase 1 | .moc3 runtime export | **Complete** |
 | Phase 2 | .cmo3 project export | **Complete** |
-| Phase 2+ | Rotation deformers + auto-parenting | **Complete** |
-| Phase 3 | Animation / warp deformers | Not started |
+| Phase 2+ | Rotation deformers + auto-parenting + parameter bindings | **Complete** |
+| Phase 3 | Animation / warp deformers | In progress |
 | Phase 4 | Physics / pose / expressions | Not started |
 
 See [PROGRESS.md](PROGRESS.md) for detailed milestone tracking.
