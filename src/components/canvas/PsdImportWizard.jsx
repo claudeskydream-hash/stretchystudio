@@ -25,6 +25,7 @@ export default function PsdImportWizard({
   const [tagOverrides, setTagOverrides] = useState({});
   const [mappingExpanded, setMappingExpanded] = useState(false);
   const [splitError, setSplitError] = useState('');
+  const [meshAllParts, setMeshAllParts] = useState(true);
 
   const { psdW, psdH, layers, partIds } = pendingPsd || {};
 
@@ -80,14 +81,14 @@ export default function PsdImportWizard({
         return `grp-${Math.random().toString(36).substr(2, 9)}`;
       });
 
-      onFinalize(groupDefs, assignments);
+      onFinalize(groupDefs, assignments, meshAllParts);
     } catch (err) {
       console.error('[Manual Rig]', err);
       setRigStatus(`Error: ${err.message}`);
     } finally {
       setRigLoading(false);
     }
-  }, [effectiveLayers, psdW, psdH, partIds, onFinalize]);
+  }, [effectiveLayers, psdW, psdH, partIds, meshAllParts, onFinalize]);
 
   /* ── Handle DWPose rigging ────────────────────────────────────────────── */
   const runArmatureRig = useCallback(async (onnxPayload) => {
@@ -111,7 +112,7 @@ export default function PsdImportWizard({
         return `grp-${Math.random().toString(36).substr(2, 9)}`;
       });
 
-      onFinalize(groupDefs, assignments);
+      onFinalize(groupDefs, assignments, meshAllParts);
     } catch (err) {
       console.error('[AutoRig]', err);
       setRigStatus(`Error: ${err.message}`);
@@ -119,7 +120,7 @@ export default function PsdImportWizard({
     } finally {
       setRigLoading(false);
     }
-  }, [effectiveLayers, psdW, psdH, partIds, onFinalize, onnxSessionRef]);
+  }, [effectiveLayers, psdW, psdH, partIds, meshAllParts, onFinalize, onnxSessionRef]);
 
   /* ── Handle arm split confirmation ─────────────────────────────────────── */
   const handleConfirmSplit = useCallback(() => {
@@ -279,6 +280,17 @@ export default function PsdImportWizard({
             </p>
           )}
 
+          {/* Mesh all parts checkbox */}
+          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
+            <input
+              type="checkbox"
+              checked={meshAllParts}
+              onChange={e => setMeshAllParts(e.target.checked)}
+              className="w-3.5 h-3.5 rounded border border-border"
+            />
+            <span>Mesh all parts after import</span>
+          </label>
+
           {/* Footer */}
           <div className="flex items-center justify-between border-t border-border pt-3 gap-1.5">
             <button
@@ -289,7 +301,7 @@ export default function PsdImportWizard({
             </button>
             <div className="flex items-center gap-1.5">
               <button
-                onClick={onSkip}
+                onClick={() => onSkip(meshAllParts)}
                 className="px-3 py-1.5 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0"
               >
                 Skip rigging
@@ -530,6 +542,15 @@ export default function PsdImportWizard({
         <span className="text-xs text-muted-foreground flex-1">
           Drag yellow dots to reposition joints.
         </span>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors shrink-0">
+          <input
+            type="checkbox"
+            checked={meshAllParts}
+            onChange={e => setMeshAllParts(e.target.checked)}
+            className="w-3.5 h-3.5 rounded border border-border"
+          />
+          <span>Mesh all parts</span>
+        </label>
         <button
           onClick={onBack}
           className="px-2 py-1 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
@@ -537,7 +558,7 @@ export default function PsdImportWizard({
           ← Back
         </button>
         <button
-          onClick={onComplete}
+          onClick={() => onComplete(meshAllParts)}
           className="px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium"
         >
           Finish

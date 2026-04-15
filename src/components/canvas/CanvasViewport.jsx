@@ -109,6 +109,23 @@ function basename(filename) {
   return filename.replace(/\.[^.]+$/, '');
 }
 
+/** Compute smart mesh options based on part surface area */
+function computeSmartMeshOpts(imageBounds) {
+  if (!imageBounds) {
+    return { alphaThreshold: 5, smoothPasses: 0, gridSpacing: 30, edgePadding: 8, numEdgePoints: 80 };
+  }
+  const w = imageBounds.maxX - imageBounds.minX;
+  const h = imageBounds.maxY - imageBounds.minY;
+  const sqrtArea = Math.sqrt(w * h);
+  return {
+    alphaThreshold: 5,
+    smoothPasses: 0,
+    gridSpacing: Math.max(6, Math.min(80, Math.round(sqrtArea * 0.08))),
+    edgePadding: 8,
+    numEdgePoints: Math.max(12, Math.min(300, Math.round(sqrtArea * 0.4))),
+  };
+}
+
 /* ──────────────────────────────────────────────────────────────────────────
    Component
 ────────────────────────────────────────────────────────────────────────── */
@@ -134,9 +151,10 @@ export default function CanvasViewport({
   const [wizardStep, setWizardStep] = useState(null);  // null | 'choose' | 'dwpose' | 'adjust'
   const [wizardPsd, setWizardPsd] = useState(null);  // { psdW, psdH, layers, partIds }
   const [confirmWipeOpen, setConfirmWipeOpen] = useState(false);
-  const [pendingPsdFile, setPendingPsdFile] = useState(null);
+  const [pendingFile, setPendingFile] = useState(null);
   const preImportSnapshotRef = useRef(null);  // project snapshot before finalizePsdImport
   const onnxSessionRef = useRef(null);  // cached ONNX session across imports
+  const meshAllPartsRef = useRef(false);  // whether to auto-mesh all parts on import completion
 
   const project = useProjectStore(s => s.project);
   const updateProject = useProjectStore(s => s.updateProject);
@@ -603,6 +621,16 @@ export default function CanvasViewport({
 
   useEffect(() => { if (remeshRef) remeshRef.current = remeshPart; }, [remeshRef, remeshPart]);
 
+  /* ── Auto-mesh all unmeshed parts with smart sizing ─────────────────────── */
+  const autoMeshAllParts = useCallback(() => {
+    const proj = projectRef.current;
+    const parts = proj.nodes.filter(n => n.type === 'part' && !n.mesh);
+    for (const node of parts) {
+      const opts = computeSmartMeshOpts(node.imageBounds);
+      remeshPart(node.id, opts);
+    }
+  }, [remeshPart]);
+
   /* ── Delete mesh for a part ──────────────────────────────────────────────── */
   const deleteMeshForPart = useCallback((partId) => {
     const node = projectRef.current.nodes.find(n => n.id === partId);
@@ -771,31 +799,41 @@ export default function CanvasViewport({
   }, []);
 
   /* ── Wizard: finalize with rig (called by PsdImportWizard) ──────────────── */
-  const handleWizardFinalize = useCallback((groupDefs, assignments) => {
+  const handleWizardFinalize = useCallback((groupDefs, assignments, meshAllParts) => {
     const { psdW, psdH, layers, partIds } = wizardPsd;
     // Snapshot project state before modifying (supports Back from adjust step)
     preImportSnapshotRef.current = JSON.stringify(useProjectStore.getState().project);
     finalizePsdImport(psdW, psdH, layers, partIds, groupDefs, assignments);
+    meshAllPartsRef.current = meshAllParts;
     useEditorStore.getState().setShowSkeleton(true);
     useEditorStore.getState().setSkeletonEditMode(true);
     setWizardStep('adjust');
   }, [wizardPsd, finalizePsdImport]);
 
   /* ── Wizard: skip rigging (called by PsdImportWizard) ──────────────────── */
-  const handleWizardSkip = useCallback(() => {
+  const handleWizardSkip = useCallback((meshAllParts) => {
     const { psdW, psdH, layers, partIds } = wizardPsd;
     finalizePsdImport(psdW, psdH, layers, partIds, [], null);
+    if (meshAllParts) {
+      // Auto-mesh will happen asynchronously as textures are uploaded
+      // Schedule it after a short delay to let finalizePsdImport complete
+      setTimeout(() => autoMeshAllParts(), 100);
+    }
     setWizardPsd(null);
     setWizardStep(null);
-  }, [wizardPsd, finalizePsdImport]);
+  }, [wizardPsd, finalizePsdImport, autoMeshAllParts]);
 
   /* ── Wizard: complete (called by PsdImportWizard adjust step) ──────────── */
-  const handleWizardComplete = useCallback(() => {
+  const handleWizardComplete = useCallback((meshAllParts) => {
+    if (meshAllParts ?? meshAllPartsRef.current) {
+      // Auto-mesh all unmeshed parts with smart sizing
+      autoMeshAllParts();
+    }
     setWizardStep(null);
     setWizardPsd(null);
     useEditorStore.getState().setSkeletonEditMode(false);
     preImportSnapshotRef.current = null;
-  }, []);
+  }, [autoMeshAllParts]);
 
   /* ── Wizard: back from adjust (revert to snapshot, reopen wizard) ──────── */
   const handleWizardBack = useCallback(() => {
@@ -829,6 +867,82 @@ export default function CanvasViewport({
     });
   }, []);
 
+  /* ── Save/Load project ────────────────────────────────────────────────── */
+  const handleSave = useCallback(async () => {
+    try {
+      const blob = await saveProject(projectRef.current);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'project.stretch';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to save project:', err);
+    }
+  }, []);
+
+  useEffect(() => { if (saveRef) saveRef.current = handleSave; }, [saveRef, handleSave]);
+
+  const handleLoadProject = useCallback(async (file) => {
+    if (!file) return;
+    try {
+      const { project: loadedProject, images } = await loadProject(file);
+
+      // Destroy all GPU resources
+      if (sceneRef.current) {
+        sceneRef.current.parts.destroyAll();
+      }
+
+      // Load project into store
+      useProjectStore.getState().loadProject(loadedProject);
+
+      // Rebuild imageDataMapRef from loaded textures
+      imageDataMapRef.current.clear();
+      for (const [partId, img] of images) {
+        const off = document.createElement('canvas');
+        off.width = img.width;
+        off.height = img.height;
+        const ctx = off.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, img.width, img.height);
+        imageDataMapRef.current.set(partId, imageData);
+      }
+
+      // Re-upload to GPU
+      for (const node of loadedProject.nodes) {
+        if (node.type !== 'part') continue;
+        if (images.has(node.id)) {
+          sceneRef.current?.parts.uploadTexture(node.id, images.get(node.id));
+        }
+        if (node.mesh) {
+          sceneRef.current?.parts.uploadMesh(node.id, node.mesh);
+        } else if (node.imageWidth && node.imageHeight) {
+          sceneRef.current?.parts.uploadQuadFallback(node.id, node.imageWidth, node.imageHeight);
+        }
+      }
+
+      // Reset animation playback state
+      useAnimationStore.getState().resetPlayback?.();
+
+      // Reset editor selection
+      useEditorStore.getState().setSelection([]);
+
+      isDirtyRef.current = true;
+
+      // Center the loaded project view
+      const cw = loadedProject.canvas?.width || 800;
+      const ch = loadedProject.canvas?.height || 600;
+      centerView(cw, ch);
+    } catch (err) {
+      console.error('Failed to load project:', err);
+    }
+  }, [centerView]);
+
+  useEffect(() => {
+    if (loadRef) loadRef.current = handleLoadProject;
+  }, [loadRef, handleLoadProject]);
+
   /* ── PSD import helper ───────────────────────────────────────────────── */
   const processPsdFile = useCallback((file) => {
     file.arrayBuffer().then((buffer) => {
@@ -854,22 +968,38 @@ export default function CanvasViewport({
   const importPsdFile = useCallback((file) => {
     const proj = projectRef.current;
     if (proj.nodes.length > 0) {
-      setPendingPsdFile(file);
+      setPendingFile(file);
       setConfirmWipeOpen(true);
     } else {
       processPsdFile(file);
     }
   }, [processPsdFile]);
 
+  const importStretchFile = useCallback((file) => {
+    const proj = projectRef.current;
+    if (proj.nodes.length > 0) {
+      setPendingFile(file);
+      setConfirmWipeOpen(true);
+    } else {
+      handleLoadProject(file);
+    }
+  }, [handleLoadProject]);
+
   const handleConfirmWipe = useCallback(() => {
-    if (pendingPsdFile) {
+    if (pendingFile) {
+      const isStretch = pendingFile.name.toLowerCase().endsWith('.stretch');
       resetProject();
       animRef.current.resetPlayback();
-      processPsdFile(pendingPsdFile);
-      setPendingPsdFile(null);
+
+      if (isStretch) {
+        handleLoadProject(pendingFile);
+      } else {
+        processPsdFile(pendingFile);
+      }
+      setPendingFile(null);
     }
     setConfirmWipeOpen(false);
-  }, [pendingPsdFile, processPsdFile, resetProject, centerView]);
+  }, [pendingFile, processPsdFile, handleLoadProject, resetProject]);
 
   /* ── Drag-and-drop ───────────────────────────────────────────────────── */
   const onDrop = useCallback((e) => {
@@ -877,12 +1007,14 @@ export default function CanvasViewport({
     const file = e.dataTransfer.files[0];
     if (!file) return;
 
-    if (file.name.toLowerCase().endsWith('.psd')) {
+    if (file.name.toLowerCase().endsWith('.stretch')) {
+      importStretchFile(file);
+    } else if (file.name.toLowerCase().endsWith('.psd')) {
       importPsdFile(file);
     } else if (file.type.startsWith('image/')) {
       importPng(file);
     }
-  }, [importPng, importPsdFile]);
+  }, [importPng, importPsdFile, importStretchFile]);
 
   const onDragOver = useCallback((e) => { e.preventDefault(); }, []);
 
@@ -1353,82 +1485,6 @@ export default function CanvasViewport({
     }
   }, []);
 
-  /* ── Save/Load project ────────────────────────────────────────────────── */
-  const handleSave = useCallback(async () => {
-    try {
-      const blob = await saveProject(projectRef.current);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'project.stretch';
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error('Failed to save project:', err);
-    }
-  }, []);
-
-  useEffect(() => { if (saveRef) saveRef.current = handleSave; }, [saveRef, handleSave]);
-
-  const handleLoadProject = useCallback(async (file) => {
-    if (!file) return;
-    try {
-      const { project: loadedProject, images } = await loadProject(file);
-
-      // Destroy all GPU resources
-      if (sceneRef.current) {
-        sceneRef.current.parts.destroyAll();
-      }
-
-      // Load project into store
-      useProjectStore.getState().loadProject(loadedProject);
-
-      // Rebuild imageDataMapRef from loaded textures
-      imageDataMapRef.current.clear();
-      for (const [partId, img] of images) {
-        const off = document.createElement('canvas');
-        off.width = img.width;
-        off.height = img.height;
-        const ctx = off.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        const imageData = ctx.getImageData(0, 0, img.width, img.height);
-        imageDataMapRef.current.set(partId, imageData);
-      }
-
-      // Re-upload to GPU
-      for (const node of loadedProject.nodes) {
-        if (node.type !== 'part') continue;
-        if (images.has(node.id)) {
-          sceneRef.current?.parts.uploadTexture(node.id, images.get(node.id));
-        }
-        if (node.mesh) {
-          sceneRef.current?.parts.uploadMesh(node.id, node.mesh);
-        } else if (node.imageWidth && node.imageHeight) {
-          sceneRef.current?.parts.uploadQuadFallback(node.id, node.imageWidth, node.imageHeight);
-        }
-      }
-
-      // Reset animation playback state
-      useAnimationStore.getState().resetPlayback?.();
-
-      // Reset editor selection
-      useEditorStore.getState().setSelection([]);
-
-      isDirtyRef.current = true;
-
-      // Center the loaded project view
-      const cw = loadedProject.canvas?.width || 800;
-      const ch = loadedProject.canvas?.height || 600;
-      centerView(cw, ch);
-    } catch (err) {
-      console.error('Failed to load project:', err);
-    }
-  }, [centerView]);
-
-  useEffect(() => {
-    if (loadRef) loadRef.current = handleLoadProject;
-  }, [loadRef, handleLoadProject]);
-
   /* ── File Upload Handlers ───────────────────────────────────────────── */
   const handlePanelClick = useCallback(() => {
     fileInputRef.current?.click();
@@ -1439,7 +1495,7 @@ export default function CanvasViewport({
     if (!file) return;
 
     if (file.name.toLowerCase().endsWith('.stretch')) {
-      handleLoadProject(file);
+      importStretchFile(file);
     } else if (file.name.toLowerCase().endsWith('.psd')) {
       importPsdFile(file);
     } else if (file.type.startsWith('image/')) {
@@ -1448,7 +1504,7 @@ export default function CanvasViewport({
 
     // Clear input so same file can be uploaded again if needed
     e.target.value = '';
-  }, [handleLoadProject, importPsdFile, importPng]);
+  }, [importStretchFile, importPsdFile, importPng]);
 
   /**
    * Reset the current project to empty state.
@@ -1718,7 +1774,7 @@ export default function CanvasViewport({
           <AlertDialogHeader>
             <AlertDialogTitle>Wipe current project?</AlertDialogTitle>
             <AlertDialogDescription>
-              Importing a new PSD will permanently delete all existing layers,
+              Importing a new project or PSD will permanently delete all existing layers,
               meshes, and animations in your current project. This action
               cannot be undone.
             </AlertDialogDescription>
@@ -1726,7 +1782,7 @@ export default function CanvasViewport({
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleConfirmWipe} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              Wipe & Import
+              Wipe & Load
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

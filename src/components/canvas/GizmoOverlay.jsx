@@ -348,9 +348,9 @@ export function GizmoOverlay() {
       <polygon
         points={bboxPoints}
         fill="none"
-        stroke="rgba(80,160,255,0.6)"
-        strokeWidth="1.5"
-        strokeDasharray="4 4"
+        stroke="rgba(255,60,60,0.8)"
+        strokeWidth="1.2"
+        strokeDasharray="4 2"
       />
 
       {/* Pivot handle (crosshair) */}

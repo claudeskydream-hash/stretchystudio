@@ -50,8 +50,8 @@ Don't just rotate layers—warp them! Animate individual mesh vertices to create
 ## 🚀 Quick Start
 
 1. **Open the App**: Head to [editor.stretchy.studio](https://editor.stretchy.studio).
-2. **Drop your Art**: Drag a PSD or PNG file into the workspace.
-3. **Auto-Rig**: Follow the 3-step wizard to setup your character skeleton.
+2. **Drop your Art**: Drag a `.stretch` project, PSD, or PNG file into the workspace.
+3. **Auto-Rig**: Follow the 3-step wizard to setup your character skeleton (for PSD/PNG).
 4. **Animate**: Switch to **Animation mode** and start creating keyframes!
 
 ---

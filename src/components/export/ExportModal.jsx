@@ -29,6 +29,7 @@ import {
   computeAnalyticalBounds,
   resolveAnimations,
 } from '@/io/exportAnimation';
+import { exportLive2D, exportLive2DProject } from '@/io/live2d';
 
 export function ExportModal({ open, onClose, captureRef }) {
   // Form state
@@ -42,14 +43,82 @@ export function ExportModal({ open, onClose, captureRef }) {
   const [bgMode, setBgMode] = useState('transparent');
   const [bgColor, setBgColor] = useState('#ffffff');
   const [exportDest, setExportDest] = useState('zip');
+  const [modelName, setModelName] = useState('model');
+  const [atlasSize, setAtlasSize] = useState(2048);
 
   // Progress state
   const [progress, setProgress] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState(null);
 
   // Store access
   const project = useProjectStore(s => s.project);
   const animStore = useAnimationStore();
+
+  const handleLive2DExport = useCallback(async () => {
+    setIsExporting(true);
+    setExportError(null);
+    setProgress({ current: 0, total: 1, label: 'Loading textures...' });
+
+    try {
+      // Load texture images from blob URLs
+      const images = new Map();
+      for (const tex of project.textures) {
+        if (!tex.source) continue;
+        await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => { images.set(tex.id, img); resolve(); };
+          img.onerror = reject;
+          img.src = tex.source;
+        });
+      }
+
+      const name = modelName.trim() || 'model';
+
+      if (type === 'live2d_project') {
+        // .cmo3 project export (editable in Cubism Editor)
+        const blob = await exportLive2DProject(project, images, {
+          modelName: name,
+          onProgress: (msg) =>
+            setProgress(p => (p ? { ...p, label: msg } : null)),
+        });
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        // If project has animations, export is a ZIP with .cmo3 + .can3
+        const hasAnims = project.animations?.length > 0;
+        a.download = hasAnims ? `${name}_live2d.zip` : `${name}.cmo3`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        // .moc3 runtime export (ZIP with atlas)
+        const blob = await exportLive2D(project, images, {
+          modelName: name,
+          atlasSize,
+          exportMotions: true,
+          onProgress: (msg) =>
+            setProgress(p => (p ? { ...p, label: msg } : null)),
+        });
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${name}_live2d.zip`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      setProgress(null);
+      setIsExporting(false);
+      onClose();
+    } catch (err) {
+      console.error('[Live2D Export] Failed:', err);
+      setExportError(err.message || 'Export failed');
+      setProgress(null);
+      setIsExporting(false);
+    }
+  }, [project, modelName, atlasSize, type, onClose]);
 
   // Sync defaults when modal opens
   useEffect(() => {
@@ -67,6 +136,10 @@ export function ExportModal({ open, onClose, captureRef }) {
   }, [open, project, animStore, animTarget]);
 
   const handleExport = useCallback(async () => {
+    if (type === 'live2d' || type === 'live2d_project') {
+      return handleLive2DExport();
+    }
+
     if (!captureRef?.current) {
       console.error('[Export] captureRef not available');
       return;
@@ -207,13 +280,15 @@ export function ExportModal({ open, onClose, captureRef }) {
     bgColor,
     exportDest,
     onClose,
+    handleLive2DExport,
   ]);
 
+  const isLive2D = type === 'live2d' || type === 'live2d_project';
   const isSpine = type === 'spine';
   const showFpsInput = type === 'sequence';
   const showFrameInput = type === 'single_frame';
   const hasFolderSupport = 'showDirectoryPicker' in window;
-  const showJpgWarning = format === 'jpg' && bgMode === 'transparent';
+  const showJpgWarning = format === 'jpg' && bgMode === 'transparent' && !isLive2D && !isSpine;
 
   // Calculate range for frame slider
   const targetAnims = resolveAnimations(
@@ -255,18 +330,20 @@ export function ExportModal({ open, onClose, captureRef }) {
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">Type</Label>
-              <Select value={type} onValueChange={setType} disabled={isExporting}>
+              <Select value={type} onValueChange={v => { setType(v); setExportError(null); }} disabled={isExporting}>
                 <SelectTrigger className="h-8 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="sequence">Sequence</SelectItem>
                   <SelectItem value="single_frame">Single Frame</SelectItem>
+                  <SelectItem value="live2d">Live2D Runtime</SelectItem>
+                  <SelectItem value="live2d_project">Live2D Project</SelectItem>
                   <SelectItem value="spine">Spine (4.0+)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            {!isSpine && (
+            {!isLive2D && !isSpine && (
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Format</Label>
                 <Select value={format} onValueChange={setFormat} disabled={isExporting}>
@@ -283,9 +360,59 @@ export function ExportModal({ open, onClose, captureRef }) {
             )}
           </div>
 
-          <Separator />
+          {/* Live2D-specific options */}
+          {isLive2D && (
+            <>
+              <Separator />
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Model Name</Label>
+                  <Input
+                    className="h-8 text-xs"
+                    value={modelName}
+                    onChange={e => setModelName(e.target.value.replace(/[^a-zA-Z0-9_-]/g, '_'))}
+                    disabled={isExporting}
+                    placeholder="model"
+                  />
+                </div>
+                {type !== 'live2d_project' && (
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Atlas Size</Label>
+                  <Select value={String(atlasSize)} onValueChange={v => setAtlasSize(Number(v))} disabled={isExporting}>
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1024">1024</SelectItem>
+                      <SelectItem value="2048">2048</SelectItem>
+                      <SelectItem value="4096">4096</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                )}
+                {type === 'live2d_project' ? (
+                  <div className="text-xs text-muted-foreground px-2 py-1.5 rounded bg-muted/50">
+                    <span className="font-medium">Live2D Cubism .cmo3</span> — project file editable in Cubism Editor 5.0. Each mesh gets its own texture. Full support for groups, rotation, mesh deformation, and animations.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="text-xs text-muted-foreground px-2 py-1.5 rounded bg-muted/50">
+                      <span className="font-medium">Live2D Cubism V4.00</span> — runtime format for Ren'Py, game engines, and apps using Cubism SDK 4.0+. Not editable in Cubism Editor.
+                    </div>
+                    <div className="text-xs text-amber-600 dark:text-amber-500 px-2 py-1.5 rounded bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+                      <span className="font-medium">⚠ Limited feature support:</span> Opacity animation only. Rotation/deformation animation requires .cmo3 project export.
+                    </div>
+                  </div>
+                )}
+
+              </div>
+            </>
+          )}
+
+          {!isLive2D && <Separator />}
 
           {/* Section 2: Animation target + timing */}
+          {!isLive2D && (<>
           <div className="space-y-3">
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">Animation</Label>
@@ -491,6 +618,14 @@ export function ExportModal({ open, onClose, captureRef }) {
                   </Label>
                 </div>
               </RadioGroup>
+            </div>
+          )}
+          </>)}
+
+          {/* Error display */}
+          {exportError && (
+            <div className="text-xs text-red-600 dark:text-red-400 px-2 py-1.5 rounded bg-red-50 dark:bg-red-900/20">
+              <span className="font-medium">Export failed:</span> {exportError}
             </div>
           )}
 
