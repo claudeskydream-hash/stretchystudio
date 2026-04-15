@@ -236,6 +236,41 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
           }
         }
 
+        // Apply blend shapes — compute blended vertex positions for nodes with active influences
+        const ed = editorRef.current;
+        for (const node of projectRef.current.nodes) {
+          if (node.type !== 'part' || !node.mesh || !node.blendShapes?.length) continue;
+          const draft = anim.draftPose.get(node.id);
+          const kfOv = poseOverrides?.get(node.id);
+
+          let hasInfluence = false;
+          const influences = node.blendShapes.map(shape => {
+            // During edit mode, always show the active shape at full influence
+            if (ed.blendShapeEditMode && ed.activeBlendShapeId === shape.id) {
+              hasInfluence = true;
+              return 1.0;
+            }
+            const prop = `blendShape:${shape.id}`;
+            const v = draft?.[prop] ?? kfOv?.[prop] ?? node.blendShapeValues?.[shape.id] ?? 0;
+            if (v !== 0) hasInfluence = true;
+            return v;
+          });
+          if (!hasInfluence) continue;
+
+          const blendedVerts = node.mesh.vertices.map((v, i) => {
+            let bx = v.restX, by = v.restY;
+            for (let j = 0; j < node.blendShapes.length; j++) {
+              const d = node.blendShapes[j].deltas[i];
+              if (d) { bx += d.dx * influences[j]; by += d.dy * influences[j]; }
+            }
+            return { x: bx, y: by };
+          });
+
+          if (!poseOverrides) poseOverrides = new Map();
+          const existing = poseOverrides.get(node.id) ?? {};
+          if (!existing.mesh_verts) poseOverrides.set(node.id, { ...existing, mesh_verts: blendedVerts });
+        }
+
         sceneRef.current.draw(projectRef.current, editorRef.current, isDarkRef.current, poseOverrides);
 
 
@@ -278,17 +313,18 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
   /* ── Mark dirty when editor view / overlays / selection changes ──────── */
   useEffect(() => { isDirtyRef.current = true; },
-    [editorState.view, editorState.selection, editorState.overlays, editorState.meshEditMode]);
+    [editorState.view, editorState.selection, editorState.overlays, editorState.meshEditMode,
+     editorState.blendShapeEditMode, editorState.activeBlendShapeId]);
 
   /* ── Mark dirty when animation time or draft pose changes ───────────── */
   useEffect(() => { isDirtyRef.current = true; }, [animStore.currentTime]);
   useEffect(() => { isDirtyRef.current = true; }, [animStore.draftPose]);
 
-  /* ── [ / ] brush size shortcuts (only in deform edit mode) ────────────── */
+  /* ── [ / ] brush size shortcuts (only in deform edit mode or blend shape edit mode) ────────────── */
   useEffect(() => {
     const handler = (e) => {
-      const { meshEditMode, meshSubMode, brushSize } = editorRef.current;
-      if (!meshEditMode || meshSubMode !== 'deform') return;
+      const { meshEditMode, meshSubMode, blendShapeEditMode, brushSize } = editorRef.current;
+      if ((!meshEditMode || meshSubMode !== 'deform') && !blendShapeEditMode) return;
       if (e.key === '[') setBrush({ brushSize: Math.max(5, brushSize - 5) });
       else if (e.key === ']') setBrush({ brushSize: Math.min(300, brushSize + 5) });
     };
@@ -383,26 +419,54 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
           }
 
           // ── mesh_verts keyframe (deform mode) ───────────────────────────
+          // Only create/update if the node actually has a mesh deform in draft,
+          // or if a mesh_verts track already exists. This prevents accidental
+          // mesh_verts keyframes from blocking blend shape animation.
           if (node.type === 'part' && node.mesh) {
-            // Read verts: draft (staged deform) > current keyframe verts > base mesh
-            const meshVerts = draft?.mesh_verts
-              ?? kfValues?.mesh_verts
-              ?? node.mesh.vertices.map(v => ({ x: v.x, y: v.y }));
-
+            const hasMeshDeform = draft?.mesh_verts !== undefined;
             let meshTrack = animation.tracks.find(t => t.nodeId === nodeId && t.property === 'mesh_verts');
-            const isNewMeshTrack = !meshTrack;
-            if (!meshTrack) {
-              meshTrack = { nodeId, property: 'mesh_verts', keyframes: [] };
-              animation.tracks.push(meshTrack);
-            }
 
-            // Auto-insert base-mesh keyframe at startFrame if this is the first keyframe
-            if (isNewMeshTrack && currentTimeMs > startMs) {
-              const baseVerts = node.mesh.vertices.map(v => ({ x: v.x, y: v.y }));
-              upsertKeyframe(meshTrack.keyframes, startMs, baseVerts, 'linear');
-            }
+            if (hasMeshDeform || meshTrack) {
+              const meshVerts = draft?.mesh_verts
+                ?? kfValues?.mesh_verts
+                ?? node.mesh.vertices.map(v => ({ x: v.x, y: v.y }));
 
-            upsertKeyframe(meshTrack.keyframes, currentTimeMs, meshVerts, 'linear');
+              const isNewMeshTrack = !meshTrack;
+              if (!meshTrack) {
+                meshTrack = { nodeId, property: 'mesh_verts', keyframes: [] };
+                animation.tracks.push(meshTrack);
+              }
+
+              // Auto-insert base-mesh keyframe at startFrame if this is the first keyframe
+              if (isNewMeshTrack && currentTimeMs > startMs) {
+                const baseVerts = node.mesh.vertices.map(v => ({ x: v.x, y: v.y }));
+                upsertKeyframe(meshTrack.keyframes, startMs, baseVerts, 'linear');
+              }
+
+              upsertKeyframe(meshTrack.keyframes, currentTimeMs, meshVerts, 'linear');
+            }
+          }
+
+          // ── blend shape influence keyframes ───────────────────────────────
+          if (node.type === 'part' && node.blendShapes?.length) {
+            for (const shape of node.blendShapes) {
+              const prop = `blendShape:${shape.id}`;
+              const value = draft?.[prop] ?? kfValues?.[prop] ?? node.blendShapeValues?.[shape.id] ?? 0;
+
+              let track = animation.tracks.find(t => t.nodeId === nodeId && t.property === prop);
+              const isNewTrack = !track;
+              if (!track) {
+                track = { nodeId, property: prop, keyframes: [] };
+                animation.tracks.push(track);
+              }
+
+              // Auto-insert rest-pose keyframe at startFrame if this is the first keyframe
+              if (isNewTrack && currentTimeMs > startMs && rest) {
+                upsertKeyframe(track.keyframes, startMs, node.blendShapeValues?.[shape.id] ?? 0, 'linear');
+              }
+
+              upsertKeyframe(track.keyframes, currentTimeMs, value, 'linear');
+            }
           }
         }
       });
@@ -439,8 +503,15 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
       updateProject((proj) => {
         const node = proj.nodes.find(n => n.id === partId);
         if (node) {
+          // Clear blend shapes on remesh since vertex count/order changed
+          if (node.blendShapes?.length > 0) {
+            console.warn(`[Stretchy] Blend shapes on "${node.name}" cleared after remesh — topology changed.`);
+            node.blendShapes = [];
+            node.blendShapeValues = {};
+          }
+
           node.mesh = { vertices, uvs: Array.from(uvs), triangles, edgeIndices };
-          
+
           // Compute skin weights if this part belongs to a limb
           const parentGroup = proj.nodes.find(n => n.id === node.parent);
           if (parentGroup && parentGroup.boneRole) {
@@ -1003,10 +1074,29 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
           // Use the effective (pose-overridden) vertex positions so the brush
           // hits where the mesh is visually displayed, not the base mesh.
-          const effectiveVerts =
+          let effectiveVerts =
             animNow.draftPose.get(selNode.id)?.mesh_verts
             ?? kfOverrides?.get(selNode.id)?.mesh_verts
             ?? selNode.mesh.vertices;
+
+          // In blend shape edit mode, apply existing deltas (active shape at full influence)
+          // so each drag continues from the visually correct position, not from rest.
+          if (editorRef.current.blendShapeEditMode && selNode.blendShapes?.length) {
+            const activeShapeId = editorRef.current.activeBlendShapeId;
+            effectiveVerts = selNode.mesh.vertices.map((v, i) => {
+              let bx = v.restX, by = v.restY;
+              for (const shape of selNode.blendShapes) {
+                const d = shape.deltas[i];
+                if (!d) continue;
+                const inf = shape.id === activeShapeId
+                  ? 1.0  // active shape always at full influence during editing
+                  : (selNode.blendShapeValues?.[shape.id] ?? 0);
+                bx += d.dx * inf;
+                by += d.dy * inf;
+              }
+              return { x: bx, y: by };
+            });
+          }
 
           const affected = [];
           for (let i = 0; i < effectiveVerts.length; i++) {
@@ -1112,7 +1202,8 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
     // Update brush circle cursor position (direct DOM, no React re-render)
     if (brushCircleRef.current) {
-      const inDeformMode = editorRef.current.meshEditMode && editorRef.current.meshSubMode === 'deform';
+      const inDeformMode = (editorRef.current.meshEditMode && editorRef.current.meshSubMode === 'deform')
+        || editorRef.current.blendShapeEditMode;
       if (inDeformMode) {
         const rect = canvas.getBoundingClientRect();
         brushCircleRef.current.setAttribute('cx', e.clientX - rect.left);
@@ -1154,6 +1245,25 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
       // GPU upload from freshly computed data (no stale ref)
       sceneRef.current?.parts.uploadPositions(partId, newVerts, allUvs);
       isDirtyRef.current = true;
+
+      // Blend shape edit mode — write to shape key deltas instead of mesh or draftPose
+      if (editorRef.current.blendShapeEditMode) {
+        const shapeId = editorRef.current.activeBlendShapeId;
+        updateProject((proj) => {
+          const node = proj.nodes.find(n => n.id === partId);
+          const shape = node?.blendShapes?.find(s => s.id === shapeId);
+          if (!shape) return;
+          for (const { index, weight } of affected) {
+            const nx = verticesSnap[index].x + localDx * weight;
+            const ny = verticesSnap[index].y + localDy * weight;
+            shape.deltas[index] = {
+              dx: nx - node.mesh.vertices[index].restX,
+              dy: ny - node.mesh.vertices[index].restY,
+            };
+          }
+        });
+        return;
+      }
 
       // In animation mode + deform: store to draftPose — don't bake into base mesh.
       // The user will press K to commit as a keyframe.

@@ -25,6 +25,7 @@ Don't just rotate layers—warp them! Animate individual mesh vertices to create
 - **2D Iris Trackpad**: Move eyes naturally with a dedicated, intuitive control pad.
 - **Automatic Eye Clipping**: Irises stay perfectly contained within the eyes—no complex masking required.
 - **Realistic Limb Bending**: Built-in vertex skinning for arms and legs so they bend exactly how they should.
+- **Blender-Style Shape Keys**: Create complex deformations (like smiles or blinks) once and blend them anyway you like via influence sliders.
 - **Spine 4.0 Export**: Export your rigs and animations directly to Spine JSON format for use in game engines and professional production pipelines.
 
 ---
