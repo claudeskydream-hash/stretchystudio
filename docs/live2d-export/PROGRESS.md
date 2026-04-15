@@ -96,8 +96,34 @@ Key bugs fixed: field name swap (vertex_counts/position_index_counts), keyform b
 - [x] Fix: VisualDefault attrs use CMutableSequence with count=0 (matching Hiyori pattern)
 - [x] Fix: Parts use "NOT INITIALIZED" GUID for targetDeformerGuid (was ROOT deformer GUID)
 - [x] **Confirmed in Cubism Editor 5.0** — .can3 loads, model renders, animation plays on timeline
+- [x] Fix: Mesh targetDeformerGuid uses jointBoneId's deformer (elbow/knee) when available
+- [x] Fix: Keyform vertex positions computed in jointBone's deformer-local space
+- [x] Explicit boneWeights/jointBoneId serialization in projectFile.js (defensive)
+- [x] **Confirmed in Cubism Editor 5.0** — "recover targetDeformer" warnings eliminated
+- [ ] **BLOCKED**: Rotation deformers rotate entire mesh rigidly — no per-vertex weighted bending
 
-## Phase 4: Future Work -- NOT STARTED
+### .cmo3 Bone Weight Problem (Session 10 Finding)
+
+SS uses per-vertex bone weights on monolithic arm meshes (one piece per arm). Live2D has no native bone weight system — rotation deformers rotate all content rigidly. This means exported elbows/knees rotate the entire limb instead of bending smoothly.
+
+**Decision: Baked keyforms (Session 11)**
+
+Instead of splitting meshes (complex, creates seams) or expecting the user to redo the work in Cubism Editor, we will bake bone-weight-based vertex positions into art mesh keyforms:
+
+- Mesh stays as one piece under the ARM deformer (shoulder rotation)
+- Mesh gets keyforms bound to the ELBOW rotation parameter
+- At each keyform angle (-30°, 0°, +30°), each vertex position = `rotate(rest, angle × boneWeight, elbowPivot)`
+- Live2D interpolates between positions → smooth weighted bending
+
+This preserves SS's rigging workflow and gives Live2D users a working puppet with smooth elbow/knee bending out of the box.
+
+## Phase 4: Future Work
+
+### Baked bone-weight keyforms (NEXT — Session 11)
+- [ ] Art mesh keyforms bound to elbow/knee rotation parameters
+- [ ] Bake per-vertex weighted rotation into keyform positions
+- [ ] Test in Cubism Editor: parameter slider bends arm smoothly
+- [ ] Handle both .cmo3 (keyforms) and .moc3 (runtime keyforms)
 
 ### Runtime enhancements
 - [ ] .physics3.json generator (hair/clothing physics simulation)

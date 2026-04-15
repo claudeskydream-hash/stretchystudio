@@ -1427,8 +1427,13 @@ export async function generateCmo3(input) {
     // Setting both to the same space breaks either textures (empty fill) or deformation (scatter).
     // See ARCHITECTURE.md "Dual-Position System" for details.
     const meshParentGroup = meshes[pm.mi].parentGroupId;
-    const dfOrigin = meshParentGroup && deformerWorldOrigins.has(meshParentGroup)
-      ? deformerWorldOrigins.get(meshParentGroup)
+    const jointBoneId = meshes[pm.mi].jointBoneId;
+    // Use jointBone's deformer origin if available (mesh is parented there),
+    // otherwise fall back to parent group's deformer origin
+    const dfOwner = jointBoneId && deformerWorldOrigins.has(jointBoneId)
+      ? jointBoneId : meshParentGroup;
+    const dfOrigin = dfOwner && deformerWorldOrigins.has(dfOwner)
+      ? deformerWorldOrigins.get(dfOwner)
       : null;
     const verts = dfOrigin
       ? canvasVerts.map((v, i) => v - (i % 2 === 0 ? dfOrigin.x : dfOrigin.y))
@@ -1517,12 +1522,17 @@ export async function generateCmo3(input) {
 
     x.sub(ds, 'CDrawableId', { 'xs.n': 'id', idstr: pm.meshId });
     x.subRef(ds, 'CDrawableGuid', pm.pidDrawable, { 'xs.n': 'guid' });
-    // targetDeformerGuid: warp deformer (if mesh has vertex animation) or rotation deformer or ROOT
+    // targetDeformerGuid: warp > jointBone's deformer > parent group's deformer > ROOT
+    // If the mesh has jointBoneId (elbow/knee skinning), parent it to that bone's
+    // deformer so the rotation parameter actually affects the mesh.
     const partId = meshes[pm.mi].partId;
+    const meshJointBoneId = meshes[pm.mi].jointBoneId;
     const meshDfGuid = meshWarpDeformerGuids.has(partId)
       ? meshWarpDeformerGuids.get(partId)
-      : (meshParentGroup && groupDeformerGuids.has(meshParentGroup)
-        ? groupDeformerGuids.get(meshParentGroup) : pidDeformerRoot);
+      : (meshJointBoneId && groupDeformerGuids.has(meshJointBoneId)
+        ? groupDeformerGuids.get(meshJointBoneId)
+        : (meshParentGroup && groupDeformerGuids.has(meshParentGroup)
+          ? groupDeformerGuids.get(meshParentGroup) : pidDeformerRoot));
     x.subRef(ds, 'CDeformerGuid', meshDfGuid, { 'xs.n': 'targetDeformerGuid' });
     x.sub(ds, 'carray_list', { 'xs.n': 'clipGuidList', count: '0' });
     x.sub(ds, 'b', { 'xs.n': 'invertClippingMask' }).text = 'false';

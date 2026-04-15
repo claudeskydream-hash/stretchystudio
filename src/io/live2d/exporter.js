@@ -223,6 +223,7 @@ export async function exportLive2DProject(project, images, opts = {}) {
       name: meshName,
       partId: part.id,
       parentGroupId: part.parent ?? null,
+      jointBoneId: part.mesh?.jointBoneId ?? null,
       drawOrder: part.draw_order ?? i,
       vertices,
       triangles,

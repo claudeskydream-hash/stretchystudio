@@ -226,6 +226,69 @@ const localY = canvasY - dfWorldOrigin.y;
 
 ---
 
+## Bone Weights → Baked Keyforms (Session 10 Design Decision)
+
+### The Problem
+
+SS uses per-vertex bone weights on monolithic limb meshes. A single arm piece has vertices weighted 0→1 from shoulder to wrist, and the elbow controller bends the arm by rotating each vertex by `angle × weight`.
+
+Live2D has **no native bone weight system**. Rotation deformers rotate all child content as a rigid body. Exporting an arm with a rotation deformer produces rigid rotation of the entire limb — no smooth bending.
+
+### Options Considered
+
+| Option | Approach | Pros | Cons |
+|--------|----------|------|------|
+| **A: Mesh splitting** | Split mesh at weight=0.5 boundary into two art meshes | Standard Live2D setup, easy to refine | Complex (triangle splitting, UV recomputation, visible seam) |
+| **B: Baked keyforms** | Store pre-computed weighted vertex positions as art mesh keyforms | Preserves single mesh, smooth result, simpler implementation | Non-standard (but editable in Cubism Editor) |
+| **C: Manual** | Export deformers only, user splits/deforms in Cubism Editor | Minimal implementation | Defeats purpose of SS as rigging tool |
+
+### Decision: Option B — Baked Keyforms
+
+**Rationale**: SS's core value is "rig quickly, export working puppet." Users have monolithic limb pieces (one PSD layer per arm) — that's the default armature wizard workflow. Baked keyforms give them a working elbow out of the box, and they can refine vertex positions in Cubism Editor if needed.
+
+### Architecture
+
+```
+Deformer hierarchy:
+  Rotation_rightArm (shoulder — rotates whole arm)
+    └─ [no elbow deformer needed as mesh parent]
+
+Art mesh (handwear-r):
+  - Parented to: Rotation_rightArm deformer
+  - Bound to parameter: ParamRotation_rightElbow
+  - 3 keyforms:
+    - At param=-30: each vertex at rotate(rest, -30° × boneWeight, elbowPivot)
+    - At param=0:   rest positions
+    - At param=+30: each vertex at rotate(rest, +30° × boneWeight, elbowPivot)
+```
+
+### Vertex Position Computation
+
+For each vertex `i` at keyform angle `θ`:
+```javascript
+const w = boneWeights[i];          // 0 (shoulder end) → 1 (wrist end)
+const wθ = θ × w × (π / 180);     // weighted angle in radians
+const dx = restX[i] - elbowPivotX; // relative to elbow pivot
+const dy = restY[i] - elbowPivotY;
+const cos = Math.cos(wθ), sin = Math.sin(wθ);
+keyformX[i] = elbowPivotX + dx * cos - dy * sin;
+keyformY[i] = elbowPivotY + dx * sin + dy * cos;
+```
+
+All positions are in the parent deformer's local space (arm deformer-local, matching the dual-position system).
+
+### Integration Points
+
+1. **exporter.js**: Pass `boneWeights` and `jointBoneId` per mesh to cmo3writer
+2. **cmo3writer.js**: For meshes with boneWeights:
+   - Keep mesh under parent arm deformer (NOT elbow deformer)
+   - Add 3 art mesh keyforms bound to elbow rotation parameter
+   - Compute baked vertex positions per keyform
+3. **moc3writer.js**: Same keyform pattern for runtime export
+4. **motion3json.js**: Elbow rotation tracks already map to ParamRotation_* (no change needed)
+
+---
+
 ## Warp Deformers (Session 9 Findings)
 
 ### Hiyori Warp Deformer Pattern
