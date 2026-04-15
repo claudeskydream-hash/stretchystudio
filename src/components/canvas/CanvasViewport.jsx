@@ -113,7 +113,11 @@ function basename(filename) {
    Component
 ────────────────────────────────────────────────────────────────────────── */
 
-export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, loadRef, captureRef }) {
+export default function CanvasViewport({ 
+  remeshRef, deleteMeshRef, 
+  saveRef, loadRef, resetRef,
+  exportCaptureRef, thumbCaptureRef 
+}) {
   const canvasRef        = useRef(null);
   const sceneRef         = useRef(null);
   const rafRef           = useRef(null);
@@ -1364,69 +1368,117 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
   useEffect(() => { if (saveRef) saveRef.current = handleSave; }, [saveRef, handleSave]);
 
-  const handleLoad = useCallback(async () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.stretch';
-    input.onchange = async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      try {
-        const { project: loadedProject, images } = await loadProject(file);
+  const handleLoadProject = useCallback(async (file) => {
+    if (!file) return;
+    try {
+      const { project: loadedProject, images } = await loadProject(file);
 
-        // Destroy all GPU resources
-        if (sceneRef.current) {
-          sceneRef.current.parts.destroyAll();
-        }
-
-        // Load project into store
-        useProjectStore.getState().loadProject(loadedProject);
-
-        // Rebuild imageDataMapRef from loaded textures
-        imageDataMapRef.current.clear();
-        for (const [partId, img] of images) {
-          const off = document.createElement('canvas');
-          off.width = img.width;
-          off.height = img.height;
-          const ctx = off.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          const imageData = ctx.getImageData(0, 0, img.width, img.height);
-          imageDataMapRef.current.set(partId, imageData);
-        }
-
-        // Re-upload to GPU (use loadedProject, not projectRef which hasn't updated yet)
-        for (const node of loadedProject.nodes) {
-          if (node.type !== 'part') continue;
-          if (images.has(node.id)) {
-            sceneRef.current?.parts.uploadTexture(node.id, images.get(node.id));
-          }
-          if (node.mesh) {
-            sceneRef.current?.parts.uploadMesh(node.id, node.mesh);
-          } else if (node.imageWidth && node.imageHeight) {
-            sceneRef.current?.parts.uploadQuadFallback(node.id, node.imageWidth, node.imageHeight);
-          }
-        }
-
-        // Reset animation playback state
-        useAnimationStore.getState().resetPlayback?.();
-
-        // Reset editor selection
-        useEditorStore.getState().setSelection([]);
-
-        isDirtyRef.current = true;
-        
-        // Center the loaded project view
-        const cw = loadedProject.canvas?.width || 800;
-        const ch = loadedProject.canvas?.height || 600;
-        centerView(cw, ch);
-      } catch (err) {
-        console.error('Failed to load project:', err);
+      // Destroy all GPU resources
+      if (sceneRef.current) {
+        sceneRef.current.parts.destroyAll();
       }
-    };
-    input.click();
+
+      // Load project into store
+      useProjectStore.getState().loadProject(loadedProject);
+
+      // Rebuild imageDataMapRef from loaded textures
+      imageDataMapRef.current.clear();
+      for (const [partId, img] of images) {
+        const off = document.createElement('canvas');
+        off.width = img.width;
+        off.height = img.height;
+        const ctx = off.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, img.width, img.height);
+        imageDataMapRef.current.set(partId, imageData);
+      }
+
+      // Re-upload to GPU
+      for (const node of loadedProject.nodes) {
+        if (node.type !== 'part') continue;
+        if (images.has(node.id)) {
+          sceneRef.current?.parts.uploadTexture(node.id, images.get(node.id));
+        }
+        if (node.mesh) {
+          sceneRef.current?.parts.uploadMesh(node.id, node.mesh);
+        } else if (node.imageWidth && node.imageHeight) {
+          sceneRef.current?.parts.uploadQuadFallback(node.id, node.imageWidth, node.imageHeight);
+        }
+      }
+
+      // Reset animation playback state
+      useAnimationStore.getState().resetPlayback?.();
+
+      // Reset editor selection
+      useEditorStore.getState().setSelection([]);
+
+      isDirtyRef.current = true;
+      
+      // Center the loaded project view
+      const cw = loadedProject.canvas?.width || 800;
+      const ch = loadedProject.canvas?.height || 600;
+      centerView(cw, ch);
+    } catch (err) {
+      console.error('Failed to load project:', err);
+    }
+  }, [centerView]);
+
+  useEffect(() => { 
+    if (loadRef) loadRef.current = handleLoadProject; 
+  }, [loadRef, handleLoadProject]);
+
+  /**
+   * Reset the current project to empty state.
+   */
+  const handleReset = useCallback(() => {
+    // 1. Destroy GPU resources
+    if (sceneRef.current) {
+      sceneRef.current.parts.destroyAll();
+    }
+
+    // 2. Clear store
+    useProjectStore.getState().resetProject();
+
+    // 3. Clear local cache
+    imageDataMapRef.current.clear();
+
+    // 4. Reset editor state
+    useAnimationStore.getState().resetPlayback?.();
+    useEditorStore.getState().setSelection([]);
+
+    isDirtyRef.current = true;
+
+    // 5. Center view
+    centerView(800, 600);
+  }, [centerView]);
+
+  useEffect(() => { 
+    if (resetRef) resetRef.current = handleReset; 
+  }, [resetRef, handleReset]);
+
+  /**
+   * Capture a thumbnail of the current staging area.
+   */
+  const captureStaging = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+
+    // Create an offscreen canvas for downsizing
+    const off = document.createElement('canvas');
+    const MAX_W = 400;
+    const scale = Math.min(1, MAX_W / canvas.width);
+    off.width = canvas.width * scale;
+    off.height = canvas.height * scale;
+    
+    const ctx = off.getContext('2d');
+    ctx.drawImage(canvas, 0, 0, off.width, off.height);
+    
+    return off.toDataURL('image/webp', 0.8);
   }, []);
 
-  useEffect(() => { if (loadRef) loadRef.current = handleLoad; }, [loadRef, handleLoad, centerView]);
+  useEffect(() => { 
+    if (thumbCaptureRef) thumbCaptureRef.current = captureStaging; 
+  }, [thumbCaptureRef, captureStaging]);
 
   /* ── Export frame capture ────────────────────────────────────────────── */
   const captureExportFrame = useCallback(({
@@ -1497,7 +1549,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     return dataUrl;
   }, []);
 
-  useEffect(() => { if (captureRef) captureRef.current = captureExportFrame; }, [captureRef, captureExportFrame]);
+  useEffect(() => { if (exportCaptureRef) exportCaptureRef.current = captureExportFrame; }, [exportCaptureRef, captureExportFrame]);
 
   /* ── Cursor style ────────────────────────────────────────────────────── */
   const toolCursor = 'crosshair';

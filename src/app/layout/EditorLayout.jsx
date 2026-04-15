@@ -13,7 +13,7 @@ import { AnimationListPanel } from '@/components/animation/AnimationListPanel';
 import { ArmaturePanel } from '@/components/armature/ArmaturePanel';
 import { ExportModal } from '@/components/export/ExportModal';
 import { PreferencesModal } from '@/components/preferences/PreferencesModal';
-import { Save, FolderOpen, Palette, Sun, Moon, SquareChartGantt, Download, Settings2 } from 'lucide-react';
+import { Save, FolderOpen, FilePlus, Palette, Sun, Moon, SquareChartGantt, Download, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { HelpIcon } from '@/components/ui/help-icon';
 import { useProjectStore } from '@/store/projectStore';
@@ -28,6 +28,20 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { makeLocalMatrix } from '@/renderer/transforms';
+import { SaveModal } from '@/components/save/SaveModal';
+import { LoadModal } from '@/components/load/LoadModal';
+import { saveToDb } from '@/io/projectDb';
+import { saveProject } from '@/io/projectFile';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 
 export default function EditorLayout() {
@@ -61,9 +75,21 @@ export default function EditorLayout() {
 
   const saveRef = useRef(null);
   const loadRef = useRef(null);
-  const captureRef = useRef(null);
+  const resetRef = useRef(null);
+  const exportCaptureRef = useRef(null);
+  const thumbCaptureRef = useRef(null);
   const [exportModalOpen, setExportModalOpen] = React.useState(false);
   const [preferencesOpen, setPreferencesOpen] = React.useState(false);
+  
+  // Library / Save system state
+  const [saveModalOpen, setSaveModalOpen] = React.useState(false);
+  const [loadModalOpen, setLoadModalOpen] = React.useState(false);
+  const [currentDbProjectId, setCurrentDbProjectId] = React.useState(null);
+  const [currentDbProjectName, setCurrentDbProjectName] = React.useState(null);
+
+  // Loading confirmations
+  const [confirmWipe, setConfirmWipe] = React.useState({ open: false, type: null, data: null });
+  const [confirmStore, setConfirmStore] = React.useState({ open: false, file: null });
 
   const {
     themeMode, setThemeMode,
@@ -139,6 +165,48 @@ export default function EditorLayout() {
     };
   }, [nodes, animations]);
 
+  // ── Project Loading Handlers ──────────────────────────────────────────────
+
+  const handleLoadRecord = useCallback((record) => {
+    if (!record) return;
+    const file = new File([record.blob], `${record.name}.stretch`, { type: 'application/zip' });
+    loadRef.current?.(file);
+    setCurrentDbProjectId(record.id);
+    setCurrentDbProjectName(record.name);
+  }, [loadRef]);
+
+  const handleCheckStore = useCallback((file) => {
+    if (!file) return;
+    setConfirmStore({ open: true, file });
+  }, []);
+
+  const finalizeLoadFile = useCallback(async (file, shouldStore) => {
+    if (!file) return;
+    setConfirmStore({ open: false, file: null });
+
+    // 1. Initial load into engine
+    await loadRef.current?.(file);
+
+    if (shouldStore) {
+      // 2. Save immediately to DB to anchor the session
+      try {
+        const name = file.name.replace(/\.stretch$/i, '');
+        const blob = await file.slice(); // Use original file blob
+        const thumbnail = thumbCaptureRef.current?.() || '';
+        const id = await saveToDb(null, name, blob, thumbnail);
+        
+        setCurrentDbProjectId(id);
+        setCurrentDbProjectName(name);
+      } catch (err) {
+        console.error('[EditorLayout] Failed to auto-store project:', err);
+      }
+    } else {
+      // Unanchored session
+      setCurrentDbProjectId(null);
+      setCurrentDbProjectName(null);
+    }
+  }, [loadRef]);
+
   return (
     <div className="flex h-screen w-full flex-col bg-background text-foreground overflow-hidden">
       {/* Top bar */}
@@ -152,8 +220,25 @@ export default function EditorLayout() {
               variant="ghost"
               size="icon"
               className="h-full w-9 rounded-none hover:bg-muted"
-              onClick={() => saveRef.current?.()}
-              title="Save project (.stretch)"
+              onClick={() => {
+                if (nodes.length > 0) {
+                  setConfirmWipe({ open: true, type: 'new' });
+                } else {
+                  resetRef.current?.();
+                  setCurrentDbProjectId(null);
+                  setCurrentDbProjectName(null);
+                }
+              }}
+              title="New project"
+            >
+              <FilePlus className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-full w-9 rounded-none border-l hover:bg-muted"
+              onClick={() => setSaveModalOpen(true)}
+              title="Save project"
             >
               <Save className="h-4 w-4" />
             </Button>
@@ -161,8 +246,8 @@ export default function EditorLayout() {
               variant="ghost"
               size="icon"
               className="h-full w-9 rounded-none border-l hover:bg-muted"
-              onClick={() => loadRef.current?.()}
-              title="Load project (.stretch)"
+              onClick={() => setLoadModalOpen(true)}
+              title="Load project"
             >
               <FolderOpen className="h-4 w-4" />
             </Button>
@@ -356,7 +441,9 @@ export default function EditorLayout() {
                   deleteMeshRef={deleteMeshRef}
                   saveRef={saveRef}
                   loadRef={loadRef}
-                  captureRef={captureRef}
+                  resetRef={resetRef}
+                  exportCaptureRef={exportCaptureRef}
+                  thumbCaptureRef={thumbCaptureRef}
                 />
               </ResizablePanel>
               {isAnimationMode && (
@@ -406,13 +493,104 @@ export default function EditorLayout() {
       <ExportModal
         open={exportModalOpen}
         onClose={() => setExportModalOpen(false)}
-        captureRef={captureRef}
+        captureRef={exportCaptureRef}
       />
 
       <PreferencesModal
         open={preferencesOpen}
         onOpenChange={setPreferencesOpen}
       />
+
+      {/* Save Modal */}
+      <SaveModal
+        open={saveModalOpen}
+        onOpenChange={setSaveModalOpen}
+        project={project}
+        captureRef={thumbCaptureRef}
+        currentDbProjectId={currentDbProjectId}
+        currentDbProjectName={currentDbProjectName}
+        onSavedToDb={(id, name) => {
+          setCurrentDbProjectId(id);
+          setCurrentDbProjectName(name);
+        }}
+      />
+
+      {/* Load Modal */}
+      <LoadModal
+        open={loadModalOpen}
+        onOpenChange={setLoadModalOpen}
+        onLoadFromDb={(record) => {
+          if (nodes.length > 0) {
+            setConfirmWipe({ open: true, type: 'db', data: record });
+          } else {
+            handleLoadRecord(record);
+          }
+        }}
+        onLoadFromFile={(file) => {
+          if (nodes.length > 0) {
+            setConfirmWipe({ open: true, type: 'file', data: file });
+          } else {
+            handleCheckStore(file);
+          }
+        }}
+      />
+
+      {/* Wipe Confirmation */}
+      <AlertDialog 
+        open={confirmWipe.open} 
+        onOpenChange={(open) => !open && setConfirmWipe({ ...confirmWipe, open: false })}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Replace current project?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete all existing layers, meshes, and 
+              animations in your current workspace. Unsaved changes will be lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={() => {
+                if (confirmWipe.type === 'db') handleLoadRecord(confirmWipe.data);
+                else if (confirmWipe.type === 'file') handleCheckStore(confirmWipe.data);
+                else if (confirmWipe.type === 'new') {
+                  resetRef.current?.();
+                  setCurrentDbProjectId(null);
+                  setCurrentDbProjectName(null);
+                }
+                setConfirmWipe({ open: false, type: null, data: null });
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Replace Workspace
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Store in Library Confirmation */}
+      <AlertDialog 
+        open={confirmStore.open} 
+        onOpenChange={(open) => !open && setConfirmStore({ ...confirmStore, open: false })}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Store imported project in Library?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Would you like to save this project to your library so you can access it easily later?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => finalizeLoadFile(confirmStore.file, false)}>
+              Skip
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={() => finalizeLoadFile(confirmStore.file, true)}>
+              Save to Library
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
