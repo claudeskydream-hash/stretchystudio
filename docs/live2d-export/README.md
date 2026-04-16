@@ -57,6 +57,7 @@ UI integration: `src/components/export/ExportModal.jsx`
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Design decisions, data mapping, keyform binding system |
 | [MOC3_FORMAT.md](MOC3_FORMAT.md) | .moc3 binary format reference |
 | [CMO3_FORMAT.md](CMO3_FORMAT.md) | .cmo3 format reference (CAFF container, XML schema) |
+| [TEMPLATES.md](TEMPLATES.md) | Live2D templates, 3D parallax, standard params — research & feasibility |
 
 ## Data Mapping
 
