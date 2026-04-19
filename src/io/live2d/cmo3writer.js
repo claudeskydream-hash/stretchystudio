@@ -1416,8 +1416,18 @@ export async function generateCmo3(input) {
 
   // --- Compute world-space pivot positions for all groups ---
   // Used for: (a) deformer origins, (b) mesh vertex → deformer-local transform
-  const groupMap = new Map(groups.map(g => [g.id, g]));
   const groupWorldMatrices = new Map();
+  const groupMap = new Map(groups.map(g => [g.id, g]));
+
+  // Identify head and neck groups for structural chain integration
+  const headGroupId = groups.find(g =>
+    g.boneRole === 'head' || g.boneRole === 'face' ||
+    (g.name && (g.name.toLowerCase() === 'head' || g.name.toLowerCase() === 'face'))
+  )?.id;
+  const neckGroupId = groups.find(g =>
+    g.boneRole === 'neck' ||
+    (g.name && g.name.toLowerCase() === 'neck')
+  )?.id;
 
   function resolveGroupWorld(groupId) {
     if (groupWorldMatrices.has(groupId)) return groupWorldMatrices.get(groupId);
@@ -3230,18 +3240,31 @@ export async function generateCmo3(input) {
       const nwGW = nwCol + 1, nwGH = nwRow + 1;
       const nwGridPts = nwGW * nwGH;
 
-      // Rest grid in Body X 0..1.
-      const nwRestBodyX = new Float64Array(nwGridPts * 2);
+      // --- Structural chain integration: target NeckWarp to GroupRotation_neck if possible ---
+      const neckGroupRotPid = neckGroupId && groupDeformerGuids.get(neckGroupId);
+      const neckGroupPivot = neckGroupId && deformerWorldOrigins.get(neckGroupId);
+      const isUnderRotation = !!neckGroupRotPid;
+
+      // Rest grid: pixel offsets if under rotation, 0..1 if under structural warp (Body X)
+      const nwRestGrid = new Float64Array(nwGridPts * 2);
       for (let r = 0; r < nwGH; r++) {
         for (let c = 0; c < nwGW; c++) {
           const idx = (r * nwGW + c) * 2;
           const cx = neckUnionBbox.minX + c * neckUnionBbox.W / nwCol;
           const cy = neckUnionBbox.minY + r * neckUnionBbox.H / nwRow;
-          nwRestBodyX[idx]     = canvasToBodyXX(cx);
-          nwRestBodyX[idx + 1] = canvasToBodyXY(cy);
+          if (isUnderRotation) {
+            nwRestGrid[idx]     = cx - neckGroupPivot.x;
+            nwRestGrid[idx + 1] = cy - neckGroupPivot.y;
+          } else {
+            nwRestGrid[idx]     = canvasToBodyXX(cx);
+            nwRestGrid[idx + 1] = canvasToBodyXY(cy);
+          }
         }
       }
-      const nwSpanX_bx = nwRestBodyX[(nwGW - 1) * 2] - nwRestBodyX[0];
+      // Span for shift calculation: should use pixel span if parent is rotation
+      const nwSpanX = isUnderRotation
+        ? neckUnionBbox.W
+        : nwRestGrid[(nwGW - 1) * 2] - nwRestGrid[0];
 
       // 3 keyforms on ParamAngleZ: -30, 0, +30.
       // At ±30, top row shifts in X by NECK_TILT_FRAC * nwSpanX_bx.
@@ -3251,15 +3274,16 @@ export async function generateCmo3(input) {
         rigDebugLog.neckWarp = {
           NECK_TILT_FRAC,
           gridCols: nwCol + 1, gridRows: nwRow + 1,
-          spanX_bodyX01: nwSpanX_bx,
-          maxShiftX_bodyX01: NECK_TILT_FRAC * nwSpanX_bx,
-          note: 'top row shift at ParamAngleZ = +30 in Body X 0..1 space',
+          spanX: nwSpanX,
+          maxShiftX: NECK_TILT_FRAC * nwSpanX,
+          parentDeformer: isUnderRotation ? 'GroupRotation_neck' : 'Body X Warp',
+          note: `top row shift at ParamAngleZ = +30 in ${isUnderRotation ? 'pixel' : '0..1'} space`,
         };
       }
       const nwKeys = [-30, 0, 30];
       const nwGridPositions = [];
       for (const k of nwKeys) {
-        const pos = new Float64Array(nwRestBodyX);
+        const pos = new Float64Array(nwRestGrid);
         if (k !== 0) {
           const sign = k / 30;
           for (let r = 0; r < nwGH; r++) {
@@ -3268,7 +3292,7 @@ export async function generateCmo3(input) {
             if (gradient === 0) continue;
             for (let c = 0; c < nwGW; c++) {
               const idx = (r * nwGW + c) * 2;
-              pos[idx] += sign * NECK_TILT_FRAC * gradient * nwSpanX_bx;
+              pos[idx] += sign * NECK_TILT_FRAC * gradient * nwSpanX;
             }
           }
         }
@@ -3279,8 +3303,9 @@ export async function generateCmo3(input) {
       pidNeckWarpGuid = pidNwGuid;
       const { pidKfg: pidNwKfg, formGuids: nwFormGuids } =
         emitSingleParamKfGrid(pidParamAngleZ, nwKeys, 'ParamAngleZ_Neck');
+      const nwTarget = neckGroupRotPid || pidBodyXGuid;
       emitStructuralWarp('Neck Warp', 'NeckWarp', nwCol, nwRow,
-        pidNwGuid, pidBodyXGuid, pidNwKfg, pidCoord, nwFormGuids, nwGridPositions);
+        pidNwGuid, nwTarget, pidNwKfg, pidCoord, nwFormGuids, nwGridPositions);
     }
 
     // ==================================================================
@@ -3310,11 +3335,20 @@ export async function generateCmo3(input) {
       const [, pidFaceRotGuid] = x.shared('CDeformerGuid', { uuid: uuid(), note: 'FaceRotation' });
       const faceRotParamKeys = [-30, 0, 30];    // ParamAngleZ keyform values
       const faceRotAngles    = [-10, 0, 10];    // corresponding rotation angles (Hiyori)
+      // --- Structural chain integration: target FaceRotation to GroupRotation_head if possible ---
+      const headGroupRotPid = headGroupId && groupDeformerGuids.get(headGroupId);
+      const headGroupPivot = headGroupId && deformerWorldOrigins.get(headGroupId);
+      const isUnderRotation = !!headGroupRotPid;
+
       const { pidKfg: pidFaceRotKfg, formGuids: faceRotFormGuids } =
         emitSingleParamKfGrid(pidParamAngleZ, faceRotParamKeys, 'ParamAngleZ');
 
-      const pivotBxX = canvasToBodyXX(facePivotCx);
-      const pivotBxY = canvasToBodyXY(facePivotCy);
+      const pivotX = isUnderRotation
+        ? facePivotCx - headGroupPivot.x
+        : canvasToBodyXX(facePivotCx);
+      const pivotY = isUnderRotation
+        ? facePivotCy - headGroupPivot.y
+        : canvasToBodyXY(facePivotCy);
 
       const [faceRotDf, pidFaceRotDf] = x.shared('CRotationDeformerSource');
       allDeformerSources.push({ pid: pidFaceRotDf, tag: 'CRotationDeformerSource' });
@@ -3334,7 +3368,8 @@ export async function generateCmo3(input) {
       x.sub(frAcpcs, 'null', { 'xs.n': 'internalColor_indirect_argb' });
       x.subRef(frAcdfs, 'CDeformerGuid', pidFaceRotGuid, { 'xs.n': 'guid' });
       x.sub(frAcdfs, 'CDeformerId', { 'xs.n': 'id', idstr: 'FaceRotation' });
-      x.subRef(frAcdfs, 'CDeformerGuid', pidBodyXGuid, { 'xs.n': 'targetDeformerGuid' });
+      const frTarget = headGroupRotPid || pidBodyXGuid;
+      x.subRef(frAcdfs, 'CDeformerGuid', frTarget, { 'xs.n': 'targetDeformerGuid' });
       x.sub(faceRotDf, 'b', { 'xs.n': 'useBoneUi_testImpl' }).text = 'true';
 
       const frKfsList = x.sub(faceRotDf, 'carray_list', {
@@ -3343,8 +3378,8 @@ export async function generateCmo3(input) {
       for (let i = 0; i < faceRotParamKeys.length; i++) {
         const rdf = x.sub(frKfsList, 'CRotationDeformerForm', {
           angle: faceRotAngles[i].toFixed(1),
-          originX: pivotBxX.toFixed(6),
-          originY: pivotBxY.toFixed(6),
+          originX: pivotX.toFixed(6),
+          originY: pivotY.toFixed(6),
           scale: '1.0',
           isReflectX: 'false',
           isReflectY: 'false',
@@ -3732,16 +3767,32 @@ export async function generateCmo3(input) {
         targetNode.attrs['xs.ref'] = pidReparentTarget;
       }
 
-      // Convert origin for ALL non-leg deformers using world position → Body X space
+      // Convert origin for ALL non-leg deformers using world position → correct space (pixels or 0..1)
       const originData = rotDeformerOriginNodes.get(gid);
       if (originData) {
-        const newOx = canvasToBodyXX(originData.wx).toFixed(6);
-        const newOy = canvasToBodyXY(originData.wy).toFixed(6);
+        const parentRef = targetNode.attrs['xs.ref'];
+        const pGroupId = group ? group.parent : null;
+        const isParentGroupRot = pGroupId && groupDeformerGuids.get(pGroupId) === parentRef;
+
+        let ox, oy;
+        if (isParentGroupRot) {
+          // Parent is another rotation deformer: use pixel offsets from parent's pivot
+          const parentPivot = deformerWorldOrigins.get(pGroupId) || { x: 0, y: 0 };
+          ox = originData.wx - parentPivot.x;
+          oy = originData.wy - parentPivot.y;
+        } else {
+          // Parent is a warp (Body X or NeckWarp etc): use 0..1 of Body X space (standard fallback)
+          ox = canvasToBodyXX(originData.wx);
+          oy = canvasToBodyXY(originData.wy);
+        }
+
+        const newOx = ox.toFixed(6);
+        const newOy = oy.toFixed(6);
         for (const rdf of originData.forms) {
           rdf.attrs.originX = newOx;
           rdf.attrs.originY = newOy;
         }
-        // Patch shared CoordType: Canvas → DeformerLocal (origins in 0..1, not pixels)
+        // Patch shared CoordType: Canvas → DeformerLocal (origins adapted to parent space)
         const coordTextNode = originData.coordNode.children.find(c => c.attrs?.['xs.n'] === 'coordName');
         if (coordTextNode) coordTextNode.text = 'DeformerLocal';
       }

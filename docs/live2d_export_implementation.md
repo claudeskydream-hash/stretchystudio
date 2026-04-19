@@ -242,4 +242,55 @@ Supported track properties for animation export:
   - Texture atlas packing (MaxRects BSSF)
   - Bone weight baking for limb deformation
   - UI warnings for limited MOC3 feature support
+- **2026-04-19:** Auto-Rigging Engine (P7-P11)
+  - **Procedural Eye Blinking**: Anatomy-aware parabola-fit closure (track eyewhite/eyelash bottom).
+  - **3D Face Parallax**: Virtual hemispherical rotation with cylindrical dome pitch (AngleX/Y).
+  - **Protected facial regions**: Eye/mouth/brow proximity protection to prevent texture stretching.
+  - **Standard parameter mapping**: ParamAngleX/Y/Z, ParamEyeBall, ParamMouthOpen, etc.
+  - **Rig Debugging**: Integrated `.rig.log.json` output for diagnostic tracking of procedural fitting.
+  - **Group Rotation Integration**: Restored functionality for custom neck/head rotation sliders by chaining them into structural warps with adaptive pixel/normalized origin mapping.
+
+---
+
+## 🏗️ Auto-Rigging System
+
+When "Generate standard Live2D rig" is enabled in the Export Modal, Stretchy Studio performs a procedural analysis of your character to build a high-quality rig compatible with Cubism Editor's standard parameter set.
+
+### 1. Geometric Face Parallax (AngleX / AngleY)
+Replaces manual keyframing with a 3D hemisphere projection:
+- **AngleX (Yaw)**: Grid points rotate 30° around a virtual Y-axis. Center of face shifts more than edges, producing geometric depth.
+- **AngleY (Pitch)**: Uses a **cylindrical dome** projection to shift columns vertically. This prevents the "squishing" artifact common in spherical pitch models.
+- **ParamAngleZ**: Rotates the head around a procedurally detected **chin anchor** (bottom-center of the 'face' tagged mesh), producing a natural swing arc.
+
+### 2. Proximity-Based Protection
+To prevent facial features from stretching during parallax, the system applies **Protected Regions**:
+- Eyes and eyebrows are treated as rigid islands.
+- Near an eye center, the parallax shift is converted from pure grid deformation to **rigid translation**.
+- This ensures the iris and lash maintain their shape while the face "skin" deforms around them.
+
+### 3. Procedural Eye Closure (ParamEyeLOpen / ParamEyeROpen)
+Instead of a generic "curtain" drop, the system uses **Anatomy-Aware Parabola Fitting**:
+- **Scanning**: Scans for the bottom-most vertices of the `eyewhite` and `eyelash` tagged meshes.
+- **Fitting**: Fits a least-squares parabola to determine the character's unique lower-eyelid curve.
+- **Closure**: All eye parts (lash, white, iris) are compressed toward this custom curve. 
+- **Result**: Perfect eye closure that matches the character's drawn eye shape without gaps or manual vertex tuning.
+
+### 4. Rigging Hierarchy
+The exporter automatically organizes the `.cmo3` hierarchy:
+- `Body Z` → `Body Y` → `Breath` → `Body X` (Standard stack)
+- `Face Rotation` (Structural head tilt, targets `GroupRotation_head` if exists)
+- `Face Parallax` (Single unified warp for all facial features)
+- `Neck Warp` (Structural neck tilt, targets `GroupRotation_neck` if exists)
+- Individual Rig Warps for hair tips, brows, and clothes.
+
+### 6. Group Rotation Integration
+Functional parameters for **Rotation Neck** and **Rotation Head** are achieved by integrating your project's group hierarchy into the rigging chain. This allows you to drive the character's anatomy using both standard procedural parameters (like `Angle Z`) and your custom group rotation sliders simultaneously.
+- **Visual Accuracy**: Uses adaptive coordinate mapping to handle nested groups (e.g., Head inside Neck), ensuring pivots remain locked to the character's anatomy.
+
+### 5. Tag-Driven Parameters
+The system uses layer tags to bind parts to standard parameters:
+- `#eyebrow-l` → `ParamBrowLY`
+- `#mouth` → `ParamMouthOpenY` + `ParamMouthForm`
+- `#front hair` → `ParamHairFront`
+- `#eyelash-l`, `#irides-l` → `ParamEyeLOpen` + `ParamEyeBallX/Y`
 
