@@ -215,6 +215,15 @@ export function PreferencesModal({ open, onOpenChange }) {
                   </div>
                 </div>
 
+                <div className="border-t pt-6">
+                  <h4 className="text-sm font-semibold mb-2">Acknowledgements</h4>
+                  <div className="bg-muted/40 rounded-lg p-3">
+                    <p className="text-[11px] leading-relaxed text-muted-foreground">
+                      Special thanks to <a href="https://github.com/pelmentor" target="_blank" rel="noopener noreferrer" className="font-bold text-primary hover:underline">pelmentor</a> for their incredible work developing the entire Live2D export engine, including the procedural rigging, parallax, and eye-closure systems.
+                    </p>
+                  </div>
+                </div>
+
 
               </TabsContent>
             </div>

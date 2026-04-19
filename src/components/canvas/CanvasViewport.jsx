@@ -7,7 +7,7 @@ import { computePoseOverrides, KEYFRAME_PROPS, getNodePropertyValue, upsertKeyfr
 import { ScenePass } from '@/renderer/scenePass';
 import { importPsd } from '@/io/psd';
 import {
-  detectCharacterFormat,
+  detectCharacterFormat, matchTag,
 } from '@/io/armatureOrganizer';
 import SkeletonOverlay from '@/components/canvas/SkeletonOverlay';
 import PsdImportWizard from '@/components/canvas/PsdImportWizard';
@@ -140,6 +140,7 @@ export default function CanvasViewport({
   const sceneRef = useRef(null);
   const rafRef = useRef(null);
   const workersRef = useRef(new Map());  // Map<partId, Worker> for concurrent mesh generation
+  const lastUploadedSourcesRef = useRef(new Map()); // Map<partId, string> (source URI)
   const imageDataMapRef = useRef(new Map()); // Map<partId, ImageData> for alpha-based picking
   const dragRef = useRef(null);   // { partId, vertexIndex, startWorldX, startWorldY, startLocalX, startLocalY }
   const panRef = useRef(null);   // { startX, startY, panX0, panY0 }
@@ -159,6 +160,7 @@ export default function CanvasViewport({
   const meshAllPartsRef = useRef(false);  // whether to auto-mesh all parts on import completion
 
   const project = useProjectStore(s => s.project);
+  const versionControl = useProjectStore(s => s.versionControl);
   const updateProject = useProjectStore(s => s.updateProject);
   const resetProject = useProjectStore(s => s.resetProject);
   const editorState = useEditorStore();
@@ -183,6 +185,60 @@ export default function CanvasViewport({
   isDarkRef.current = isDark;
 
   useEffect(() => { isDirtyRef.current = true; }, [project, isDark]);
+  
+  /* ── GPU Sync: Ensure nodes in store have matching WebGL resources ── */
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    for (const node of project.nodes) {
+      if (node.type !== 'part') continue;
+
+      // 1. Texture Sync
+      const texEntry = project.textures.find(t => t.id === node.id);
+      if (texEntry) {
+        const isUploaded = scene.parts.hasTexture(node.id);
+        const lastSource = lastUploadedSourcesRef.current.get(node.id);
+        const sourceChanged = lastSource !== texEntry.source;
+
+        if (!isUploaded || sourceChanged) {
+          const sourceToUpload = texEntry.source;
+          const img = new Image();
+          img.onload = () => {
+            // Check if node still exists and still lacks texture or source changed (concurrency)
+            if (sceneRef.current?.parts) {
+              const currentTex = projectRef.current.textures.find(t => t.id === node.id);
+              if (currentTex?.source === sourceToUpload) {
+                sceneRef.current.parts.uploadTexture(node.id, img);
+                lastUploadedSourcesRef.current.set(node.id, sourceToUpload);
+                
+                // Maintain imageDataMapRef for alpha picking
+                const off = document.createElement('canvas');
+                off.width = img.width; off.height = img.height;
+                const ctx = off.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                imageDataMapRef.current.set(node.id, ctx.getImageData(0, 0, img.width, img.height));
+                
+                isDirtyRef.current = true;
+              }
+            }
+          };
+          img.src = sourceToUpload;
+        }
+      }
+
+      // 2. Mesh Sync
+      if (!scene.parts.hasMesh(node.id)) {
+        if (node.mesh) {
+          scene.parts.uploadMesh(node.id, node.mesh);
+          isDirtyRef.current = true;
+        } else if (node.imageWidth && node.imageHeight) {
+          scene.parts.uploadQuadFallback(node.id, node.imageWidth, node.imageHeight);
+          isDirtyRef.current = true;
+        }
+      }
+    }
+  }, [project.nodes, project.textures, versionControl.textureVersion]);
 
   const centerView = useCallback((contentW, contentH) => {
     const canvas = canvasRef.current;
@@ -995,6 +1051,10 @@ export default function CanvasViewport({
 
       return { ...prev, layers: newLayers, partIds: newPartIds };
     });
+  }, []);
+
+  const handleWizardUpdatePsd = useCallback((updates) => {
+    setWizardPsd(prev => (prev ? { ...prev, ...updates } : prev));
   }, []);
 
   /* ── Save/Load project ────────────────────────────────────────────────── */
@@ -1967,6 +2027,7 @@ export default function CanvasViewport({
           onComplete={handleWizardComplete}
           onBack={handleWizardBack}
           onSplitArms={handleWizardSplitArms}
+          onUpdatePsd={handleWizardUpdatePsd}
           onReorder={handleWizardReorder}
           onApplyRig={handleWizardApplyRig}
         />

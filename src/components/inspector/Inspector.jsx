@@ -282,6 +282,103 @@ function TransformPanel({ node, allNodes }) {
   );
 }
 
+/* ── Texture Panel ────────────────────────────────────────────────────────── */
+
+function TexturePanel({ node }) {
+  const updateProject = useProjectStore(s => s.updateProject);
+  const textures = useProjectStore(s => s.project.textures);
+  const fileInputRef = useRef(null);
+
+  if (!node || node.type !== 'part') return null;
+
+  const handleExport = () => {
+    const tex = textures.find(t => t.id === node.id);
+    if (!tex) {
+      console.warn('No texture found for node', node.id);
+      return;
+    }
+    
+    const link = document.createElement('a');
+    link.href = tex.source;
+    link.download = `${node.name || node.id}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const onFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const source = event.target.result;
+      const img = new Image();
+      img.onload = () => {
+        updateProject((proj, ver) => {
+          // Update texture entry
+          const texIdx = proj.textures.findIndex(t => t.id === node.id);
+          if (texIdx !== -1) {
+            proj.textures[texIdx].source = source;
+          } else {
+            proj.textures.push({ id: node.id, source });
+          }
+
+          // Update node dimensions
+          const n = proj.nodes.find(x => x.id === node.id);
+          if (n) {
+            n.imageWidth = img.width;
+            n.imageHeight = img.height;
+          }
+          
+          ver.textureVersion++;
+        });
+      };
+      img.src = source;
+    };
+    reader.readAsDataURL(file);
+    
+    // Reset input so searching for the same file works again
+    e.target.value = '';
+  };
+
+  return (
+    <div className="space-y-2">
+      <SectionTitle>Texture</SectionTitle>
+      <div className="grid grid-cols-2 gap-2">
+        <Button 
+          size="sm" 
+          variant="outline" 
+          className="h-7 text-xs"
+          onClick={handleExport}
+        >
+          Export Texture
+        </Button>
+        <Button 
+          size="sm" 
+          variant="outline" 
+          className="h-7 text-xs"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          Replace Texture
+        </Button>
+      </div>
+      <input
+        type="file"
+        ref={fileInputRef}
+        className="hidden"
+        accept="image/*"
+        onChange={onFileChange}
+      />
+      {node.mesh && (
+        <p className="text-[10px] text-muted-foreground leading-tight italic">
+          Tip: You may need to click 'Remesh' if the new image has different dimensions.
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* ── Mesh settings ────────────────────────────────────────────────────────── */
 
 function MeshPanel({ node, onRemesh, onDeleteMesh }) {
@@ -817,6 +914,8 @@ export function Inspector({ onRemesh, onDeleteMesh }) {
           <TransformPanel node={effectiveNode} allNodes={nodes} />
           {effectiveNode.type === 'part' && (
             <>
+              <Separator />
+              <TexturePanel node={effectiveNode} />
               <Separator />
               <MeshPanel node={effectiveNode} onRemesh={onRemesh} onDeleteMesh={onDeleteMesh} />
               {effectiveNode.mesh && (

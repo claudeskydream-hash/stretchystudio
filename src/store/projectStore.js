@@ -4,6 +4,25 @@ import { pushSnapshot, isBatching, clearHistory } from '@/store/undoHistory';
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
+/**
+ * Deep clone an object, preserving TypedArrays.
+ * Safe for use with Immer draft proxies.
+ */
+function deepClone(obj) {
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (obj instanceof Float32Array) return new Float32Array(obj);
+  if (obj instanceof Uint16Array) return new Uint16Array(obj);
+  if (obj instanceof Uint32Array) return new Uint32Array(obj);
+  if (Array.isArray(obj)) return obj.map(deepClone);
+  const cloned = {};
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      cloned[key] = deepClone(obj[key]);
+    }
+  }
+  return cloned;
+}
+
 export const DEFAULT_TRANSFORM = () => ({
   x: 0, y: 0,
   rotation: 0,
@@ -259,4 +278,127 @@ export const useProjectStore = create((set) => ({
     pin.x = x; pin.y = y;
     state.versionControl.geometryVersion++;
   })),
+
+  /**
+   * Recursively duplicate a node and its children.
+   * Also duplicates animation tracks.
+   */
+  duplicateNode: (nodeId) => set((state) => {
+    if (!isBatching()) pushSnapshot(state.project);
+
+    return produce(state, (draft) => {
+      const proj = draft.project;
+      const idsToMap = new Map(); // oldId -> newId
+
+      function doDuplicate(id, parentId) {
+        const original = proj.nodes.find(n => n.id === id);
+        if (!original) return null;
+
+        const newId = uid();
+        idsToMap.set(id, newId);
+
+        const newNode = deepClone(original);
+        newNode.id = newId;
+        newNode.parent = parentId;
+        newNode.name = original.name + ' Copy';
+
+        // For parts, handle draw_order and texture duplication
+        if (original.type === 'part') {
+          // Texture entry
+          const originalTex = proj.textures.find(t => t.id === id);
+          if (originalTex) {
+            proj.textures.push({
+              ...originalTex,
+              id: newId
+            });
+          }
+
+          // Increment draw_order of all parts that are currently at or above the original's draw order
+          proj.nodes.forEach(n => {
+            if (n.type === 'part' && n.draw_order > original.draw_order) {
+              n.draw_order++;
+            }
+          });
+          newNode.draw_order = original.draw_order + 1;
+        }
+
+        // Insert into flat nodes array
+        proj.nodes.push(newNode);
+
+        // Recursively duplicate children
+        const children = proj.nodes.filter(n => n.parent === id && !idsToMap.has(n.id));
+        for (const child of children) {
+          doDuplicate(child.id, newId);
+        }
+        return newId;
+      }
+
+      const rootNode = proj.nodes.find(n => n.id === nodeId);
+      if (!rootNode) return;
+
+      doDuplicate(nodeId, rootNode.parent);
+
+      // Duplicate animation tracks for all duplicated nodes
+      for (const [oldId, newId] of idsToMap) {
+        for (const anim of proj.animations) {
+          const tracks = anim.tracks.filter(t => t.nodeId === oldId);
+          for (const track of tracks) {
+            anim.tracks.push({
+              ...deepClone(track),
+              nodeId: newId,
+            });
+          }
+        }
+      }
+
+      draft.versionControl.transformVersion++;
+      draft.versionControl.geometryVersion++;
+    });
+  }),
+
+  /**
+   * Recursively delete a node and all its children.
+   * Also cleans up animation tracks.
+   */
+  deleteNode: (nodeId) => set((state) => {
+    if (!isBatching()) pushSnapshot(state.project);
+
+    return produce(state, (draft) => {
+      const proj = draft.project;
+      const idsToDelete = new Set();
+
+      function collectRecursive(id) {
+        idsToDelete.add(id);
+        const children = proj.nodes.filter(n => n.parent === id);
+        for (const child of children) {
+          collectRecursive(child.id);
+        }
+      }
+
+      collectRecursive(nodeId);
+
+      // Remove nodes
+      proj.nodes = proj.nodes.filter(n => !idsToDelete.has(n.id));
+
+      // Remove textures
+      proj.textures = proj.textures.filter(t => !idsToDelete.has(t.id));
+
+      // Remove animation tracks
+      for (const anim of proj.animations) {
+        anim.tracks = anim.tracks.filter(t => !idsToDelete.has(t.nodeId));
+      }
+
+      // Re-normalize draw_order for remaining parts to ensure no gaps (optional but clean)
+      const remainingParts = proj.nodes
+        .filter(n => n.type === 'part')
+        .sort((a, b) => a.draw_order - b.draw_order);
+      
+      remainingParts.forEach((p, i) => {
+        p.draw_order = i;
+      });
+
+      draft.versionControl.transformVersion++;
+      draft.versionControl.geometryVersion++;
+    });
+  }),
 }));

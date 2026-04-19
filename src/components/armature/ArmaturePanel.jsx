@@ -34,33 +34,30 @@ export function ArmaturePanel() {
             className={[
               'flex-1 flex flex-col items-center justify-center gap-1.5 px-2 py-2.5 text-[11px] rounded-md border transition-all duration-200 font-medium',
               editorState.showSkeleton
-                ? 'bg-primary/10 border-primary/40 text-primary shadow-[0_0_10px_rgba(var(--primary),0.1)]'
-                : 'bg-muted/50 border-border text-muted-foreground hover:text-foreground hover:bg-muted',
+                ? 'bg-primary/10 border-primary/40 text-primary shadow-[0_0_10px_rgba(var(--primary),0.1)] hover:bg-primary/20'
+                : 'bg-primary text-primary-foreground border-primary shadow-lg hover:bg-primary/90 vista-effect',
             ].join(' ')}
           >
             {editorState.showSkeleton ? <EyeOff size={16} /> : <Eye size={16} />}
             <span className="leading-none">{editorState.showSkeleton ? 'Hide' : 'Show'}</span>
           </button>
 
-          {/* Joint Edit Toggle — only in staging mode */}
-          {editorState.editorMode === 'staging' && (
+          {/* Joint Edit Toggle — only in staging mode AND if skeleton is shown */}
+          {editorState.editorMode === 'staging' && editorState.showSkeleton && (
             <button
               onClick={() => setSkeletonEditMode(!editorState.skeletonEditMode)}
-              disabled={!editorState.showSkeleton}
-              title={!editorState.showSkeleton ? 'Show skeleton to edit joints' : (editorState.skeletonEditMode ? 'Finish Editing' : 'Edit Joints')}
+              title={editorState.skeletonEditMode ? 'Finish Editing' : 'Edit Joints'}
               className={[
                 'flex-1 flex flex-col items-center justify-center gap-1.5 px-2 py-2.5 text-[11px] rounded-md border transition-all duration-200 font-medium relative',
-                !editorState.showSkeleton 
-                  ? 'opacity-40 cursor-not-allowed border-border text-muted-foreground bg-muted/20' 
-                  : (editorState.skeletonEditMode
-                    ? 'bg-yellow-500/10 border-yellow-500/40 text-yellow-500 shadow-[0_0_10px_rgba(234,179,8,0.1)]'
-                    : 'bg-muted/50 border-border text-muted-foreground hover:text-foreground hover:bg-muted'),
+                editorState.skeletonEditMode
+                  ? 'bg-yellow-500/10 border-yellow-500/40 text-yellow-500 shadow-[0_0_10px_rgba(234,179,8,0.1)]'
+                  : 'bg-muted/50 border-border text-muted-foreground hover:text-foreground hover:bg-muted',
               ].join(' ')}
             >
               {editorState.skeletonEditMode ? <Check size={16} /> : <Edit3 size={16} />}
               <span className="leading-none">{editorState.skeletonEditMode ? 'Done' : 'Edit'}</span>
               
-              {editorState.showSkeleton && editorState.skeletonEditMode && (
+              {editorState.skeletonEditMode && (
                 <span className="absolute top-1.5 right-1.5 flex h-1.5 w-1.5 rounded-full bg-yellow-500 animate-pulse" />
               )}
             </button>

@@ -4,7 +4,7 @@
  * DRAW ORDER tab (default):
  *   Flat list of part nodes sorted by draw_order descending (same as before).
  *   Shows a group-name chip badge when a part is parented.
- *   Right-click context menu: "Move into group" / "Remove from group".
+ *   Right-click context menu: "Duplicate" / "Delete" / Hierarchy management.
  *
  * Groups tab:
  *   Tree view of all nodes (groups + parts).
@@ -12,15 +12,23 @@
  *   "New Group" button in the toolbar.
  */
 import React, { useCallback, useState, useRef } from 'react';
+import { Eye, EyeOff, Copy, Trash2, FolderPlus, LogOut } from 'lucide-react';
 import { useProjectStore } from '@/store/projectStore';
 import { useEditorStore } from '@/store/editorStore';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+  ContextMenuSeparator,
+} from '@/components/ui/context-menu';
 
 /* ── Icons ────────────────────────────────────────────────────────────────── */
 
 function PartIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="1" y="1" width="10" height="10" rx="1"/>
+      <rect x="1" y="1" width="10" height="10" rx="1" />
     </svg>
   );
 }
@@ -28,8 +36,8 @@ function PartIcon() {
 function GroupIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="1" y="3" width="10" height="8" rx="1"/>
-      <path d="M3 3V2a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/>
+      <rect x="1" y="3" width="10" height="8" rx="1" />
+      <path d="M3 3V2a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1" />
     </svg>
   );
 }
@@ -39,14 +47,16 @@ function ChevronIcon({ open }) {
   return (
     <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"
       style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.1s' }}>
-      <path d="M3 2l4 3-4 3"/>
+      <path d="M3 2l4 3-4 3" />
     </svg>
   );
 }
 
 /* ── DRAW ORDER Tab ──────────────────────────────────────────────────────── */
 
-function DepthTabRow({ node, parentGroup, isSelected, onSelect, onToggleVisible, onOpenCtxMenu, onDragStart, onDragOver, onDrop, isDragOver }) {
+function DepthTabRow({ node, parentGroup, isSelected, onSelect, onToggleVisible, onDragStart, onDragOver, onDrop, isDragOver }) {
+  const isVisible = node.visible !== false;
+
   return (
     <div
       draggable
@@ -58,9 +68,9 @@ function DepthTabRow({ node, parentGroup, isSelected, onSelect, onToggleVisible,
             ? 'bg-accent border border-accent-foreground/30'
             : 'hover:bg-muted text-foreground border border-transparent'
         }
+        ${!isVisible ? 'opacity-50' : ''}
       `}
       onClick={() => onSelect(node.id)}
-      onContextMenu={(e) => { e.preventDefault(); onOpenCtxMenu(e, node.id); }}
       onDragStart={(e) => onDragStart(e, node.id)}
       onDragOver={(e) => { e.preventDefault(); onDragOver(node.id); }}
       onDragLeave={() => onDragOver(null)}
@@ -87,6 +97,15 @@ function DepthTabRow({ node, parentGroup, isSelected, onSelect, onToggleVisible,
         </button>
       )}
 
+      {/* Visibility Toggle */}
+      <button
+        className={`shrink-0 w-5 h-5 flex items-center justify-center rounded-sm hover:bg-foreground/10 transition-colors ${isVisible ? 'text-muted-foreground hover:text-foreground' : 'text-muted-foreground/40'}`}
+        onClick={(e) => { e.stopPropagation(); onToggleVisible(node.id); }}
+        title={isVisible ? "Hide layer" : "Show layer"}
+      >
+        {isVisible ? <Eye size={20} /> : <EyeOff size={20} />}
+      </button>
+
     </div>
   );
 }
@@ -99,6 +118,7 @@ function GroupsTreeRow({
   onDragStart, onDragOver, onDrop, isDragOver,
 }) {
   const indent = depth * 14;
+  const isVisible = node.visible !== false;
 
   return (
     <div
@@ -111,6 +131,7 @@ function GroupsTreeRow({
             ? 'bg-accent border border-accent-foreground/30'
             : 'hover:bg-muted text-foreground border border-transparent'
         }
+        ${!isVisible ? 'opacity-50' : ''}
       `}
       style={{ paddingLeft: 8 + indent }}
       onClick={() => onSelect(node.id)}
@@ -141,6 +162,15 @@ function GroupsTreeRow({
         {node.name || node.id}
       </span>
 
+      {/* Visibility Toggle */}
+      <button
+        className={`shrink-0 w-5 h-5 flex items-center justify-center rounded-sm hover:bg-foreground/10 transition-colors ${isVisible ? 'text-muted-foreground hover:text-foreground' : 'text-muted-foreground/40'}`}
+        onClick={(e) => { e.stopPropagation(); onToggleVisible(node.id); }}
+        title={isVisible ? (node.type === 'group' ? "Hide group" : "Hide layer") : (node.type === 'group' ? "Show group" : "Show layer")}
+      >
+        {isVisible ? <Eye size={20} /> : <EyeOff size={20} />}
+      </button>
+
     </div>
   );
 }
@@ -148,19 +178,20 @@ function GroupsTreeRow({
 /* ── LayerPanel ───────────────────────────────────────────────────────────── */
 
 export function LayerPanel() {
-  const nodes         = useProjectStore(s => s.project.nodes);
+  const nodes = useProjectStore(s => s.project.nodes);
   const updateProject = useProjectStore(s => s.updateProject);
-  const createGroup   = useProjectStore(s => s.createGroup);
-  const reparentNode  = useProjectStore(s => s.reparentNode);
+  const createGroup = useProjectStore(s => s.createGroup);
+  const reparentNode = useProjectStore(s => s.reparentNode);
+  const duplicateNode = useProjectStore(s => s.duplicateNode);
+  const deleteNode = useProjectStore(s => s.deleteNode);
 
-  const selection         = useEditorStore(s => s.selection);
-  const setSelection      = useEditorStore(s => s.setSelection);
-  const activeLayerTab    = useEditorStore(s => s.activeLayerTab);
+  const selection = useEditorStore(s => s.selection);
+  const setSelection = useEditorStore(s => s.setSelection);
+  const showSkeleton = useEditorStore(s => s.showSkeleton);
+  const setShowSkeleton = useEditorStore(s => s.setShowSkeleton);
+  const activeLayerTab = useEditorStore(s => s.activeLayerTab);
   const setActiveLayerTab = useEditorStore(s => s.setActiveLayerTab);
-  const wizardStep        = useEditorStore(s => s.wizardStep);
-
-  // Context menu state (Depth tab)
-  const [ctxMenu, setCtxMenu] = useState(null); // { nodeId, x, y }
+  const wizardStep = useEditorStore(s => s.wizardStep);
 
   // Drag state (Depth tab - reorder by draw_order)
   const dragSourceIdDepth = useRef(null);
@@ -170,10 +201,18 @@ export function LayerPanel() {
   const dragNodeId = useRef(null);
   const [dragOverId, setDragOverId] = useState(null);
 
-  const expanded          = useEditorStore(s => s.expandedGroups);
+  const expanded = useEditorStore(s => s.expandedGroups);
   const toggleGroupExpand = useEditorStore(s => s.toggleGroupExpand);
-  const expandGroup       = useEditorStore(s => s.expandGroup);
+  const expandGroup = useEditorStore(s => s.expandGroup);
   const setExpandedGroups = useEditorStore(s => s.setExpandedGroups);
+
+  const handleSelect = useCallback((id) => {
+    setSelection([id]);
+    const node = nodes.find(n => n.id === id);
+    if (node && node.type === 'part' && showSkeleton) {
+      setShowSkeleton(false);
+    }
+  }, [nodes, setSelection, showSkeleton, setShowSkeleton]);
 
   // ── Depth tab actions ─────────────────────────────────────────────────
 
@@ -183,12 +222,6 @@ export function LayerPanel() {
       if (node) node.visible = node.visible === false ? true : false;
     });
   }, [updateProject]);
-
-  const openCtxMenu = useCallback((e, nodeId) => {
-    setCtxMenu({ nodeId, x: e.clientX, y: e.clientY });
-  }, []);
-
-  const closeCtxMenu = useCallback(() => setCtxMenu(null), []);
 
   const onDragStartDepth = useCallback((e, nodeId) => {
     dragSourceIdDepth.current = nodeId;
@@ -271,8 +304,8 @@ export function LayerPanel() {
       const children = childMap[parentId] ?? [];
       // Groups first, then parts
       const sorted = [
-        ...children.filter(n => n.type === 'group').sort((a,b) => a.name.localeCompare(b.name)),
-        ...children.filter(n => n.type === 'part').sort((a,b) => b.draw_order - a.draw_order),
+        ...children.filter(n => n.type === 'group').sort((a, b) => a.name.localeCompare(b.name)),
+        ...children.filter(n => n.type === 'part').sort((a, b) => b.draw_order - a.draw_order),
       ];
       for (const n of sorted) {
         rows.push({ node: n, depth });
@@ -288,8 +321,8 @@ export function LayerPanel() {
 
   // ── Derived ───────────────────────────────────────────────────────────
 
-  const nodeMap  = new Map(nodes.map(n => [n.id, n]));
-  const groups   = nodes.filter(n => n.type === 'group');
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+  const groups = nodes.filter(n => n.type === 'group');
   const depthRows = [...nodes]
     .filter(n => n.type === 'part')
     .sort((a, b) => b.draw_order - a.draw_order);
@@ -298,18 +331,17 @@ export function LayerPanel() {
   // ── Render ────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-full flex-col" onClick={() => ctxMenu && closeCtxMenu()}>
+    <div className="flex h-full flex-col">
 
       {/* Tab bar */}
       <div className="flex items-center border-b shrink-0">
         {['depth', 'groups'].filter(t => !wizardStep || t !== 'groups').map(tab => (
           <button
             key={tab}
-            className={`flex-1 py-1.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
-              activeLayerTab === tab
-                ? 'text-foreground border-b-2 border-primary'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
+            className={`flex-1 py-1.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${activeLayerTab === tab
+              ? 'text-foreground border-b-2 border-primary'
+              : 'text-muted-foreground hover:text-foreground'
+              }`}
             onClick={() => setActiveLayerTab(tab)}
           >
             {tab === 'depth' ? 'DRAW ORDER' : 'Groups'}
@@ -333,19 +365,69 @@ export function LayerPanel() {
               <p className="text-xs text-muted-foreground p-3 text-center">No layers yet.</p>
             ) : (
               depthRows.map(node => (
-                <DepthTabRow
-                  key={node.id}
-                  node={node}
-                  parentGroup={node.parent ? nodeMap.get(node.parent) : null}
-                  isSelected={selection.includes(node.id)}
-                  isDragOver={dragOverIdDepth === node.id}
-                  onSelect={(id) => setSelection([id])}
-                  onToggleVisible={toggleVisible}
-                  onOpenCtxMenu={openCtxMenu}
-                  onDragStart={onDragStartDepth}
-                  onDragOver={(id) => setDragOverIdDepth(id)}
-                  onDrop={onDropDepth}
-                />
+                <ContextMenu key={node.id}>
+                  <ContextMenuTrigger>
+                    <DepthTabRow
+                      node={node}
+                      parentGroup={node.parent ? nodeMap.get(node.parent) : null}
+                      isSelected={selection.includes(node.id)}
+                      isDragOver={dragOverIdDepth === node.id}
+                      onSelect={handleSelect}
+                      onToggleVisible={toggleVisible}
+                      onDragStart={onDragStartDepth}
+                      onDragOver={(id) => setDragOverIdDepth(id)}
+                      onDrop={onDropDepth}
+                    />
+                  </ContextMenuTrigger>
+                  <ContextMenuContent className="w-56">
+                    <ContextMenuItem onSelect={() => {
+                      createGroup('Group');
+                      setTimeout(() => {
+                        const allNodes = useProjectStore.getState().project.nodes;
+                        const newGroup = [...allNodes].reverse().find(n => n.type === 'group');
+                        if (newGroup) reparentNode(node.id, newGroup.id);
+                      }, 0);
+                    }}>
+                      <FolderPlus className="w-4 h-4 mr-2 opacity-70" />
+                      New group with this
+                    </ContextMenuItem>
+
+                    {node.parent && (
+                      <ContextMenuItem onSelect={() => reparentNode(node.id, null)}>
+                        <LogOut className="w-4 h-4 mr-2 opacity-70" />
+                        Remove from group
+                      </ContextMenuItem>
+                    )}
+
+                    <ContextMenuSeparator />
+
+                    <ContextMenuItem onSelect={() => duplicateNode(node.id)}>
+                      <Copy className="w-4 h-4 mr-2 opacity-70" />
+                      Duplicate
+                    </ContextMenuItem>
+
+                    <ContextMenuItem
+                      className="text-destructive focus:text-destructive"
+                      onSelect={() => {
+                        const idsToDelete = new Set();
+                        const collectRecursive = (id) => {
+                          idsToDelete.add(id);
+                          nodes.filter(n => n.parent === id).forEach(c => collectRecursive(c.id));
+                        };
+                        collectRecursive(node.id);
+
+                        if (selection.some(id => idsToDelete.has(id))) {
+                          setSelection([]);
+                        }
+
+                        deleteNode(node.id);
+                      }}
+                    >
+                      <Trash2 className="w-4 h-4 mr-2 opacity-70" />
+                      Delete
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               ))
             )}
           </div>
@@ -374,86 +456,77 @@ export function LayerPanel() {
               <p className="text-xs text-muted-foreground p-3 text-center">No layers yet.</p>
             ) : (
               treeRows.map(({ node, depth }) => (
-                <GroupsTreeRow
-                  key={node.id}
-                  node={node}
-                  depth={depth}
-                  isSelected={selection.includes(node.id)}
-                  isExpanded={expanded.has(node.id)}
-                  isDragOver={dragOverId === node.id}
-                  onSelect={(id) => setSelection([id])}
-                  onToggleExpand={toggleExpand}
-                  onToggleVisible={toggleVisible}
-                  onDragStart={onDragStart}
-                  onDragOver={(id) => setDragOverId(id)}
-                  onDrop={onDrop}
-                />
+                <ContextMenu key={node.id}>
+                  <ContextMenuTrigger>
+                    <GroupsTreeRow
+                      node={node}
+                      depth={depth}
+                      isSelected={selection.includes(node.id)}
+                      isExpanded={expanded.has(node.id)}
+                      isDragOver={dragOverId === node.id}
+                      onSelect={handleSelect}
+                      onToggleExpand={toggleExpand}
+                      onToggleVisible={toggleVisible}
+                      onDragStart={onDragStart}
+                      onDragOver={(id) => setDragOverId(id)}
+                      onDrop={onDrop}
+                    />
+                  </ContextMenuTrigger>
+                  <ContextMenuContent className="w-56">
+                    <ContextMenuItem onSelect={() => {
+                      createGroup('Group');
+                      setTimeout(() => {
+                        const allNodes = useProjectStore.getState().project.nodes;
+                        const newGroup = [...allNodes].reverse().find(n => n.type === 'group');
+                        if (newGroup) reparentNode(node.id, newGroup.id);
+                      }, 0);
+                    }}>
+                      <FolderPlus className="w-4 h-4 mr-2 opacity-70" />
+                      New group with this
+                    </ContextMenuItem>
+
+                    {node.parent && (
+                      <ContextMenuItem onSelect={() => reparentNode(node.id, null)}>
+                        <LogOut className="w-4 h-4 mr-2 opacity-70" />
+                        Remove from group
+                      </ContextMenuItem>
+                    )}
+
+                    <ContextMenuSeparator />
+
+                    <ContextMenuItem onSelect={() => duplicateNode(node.id)}>
+                      <Copy className="w-4 h-4 mr-2 opacity-70" />
+                      Duplicate
+                    </ContextMenuItem>
+
+                    <ContextMenuItem
+                      className="text-destructive focus:text-destructive"
+                      onSelect={() => {
+                        const idsToDelete = new Set();
+                        const collectRecursive = (id) => {
+                          idsToDelete.add(id);
+                          nodes.filter(n => n.parent === id).forEach(c => collectRecursive(c.id));
+                        };
+                        collectRecursive(node.id);
+
+                        if (selection.some(id => idsToDelete.has(id))) {
+                          setSelection([]);
+                        }
+
+                        deleteNode(node.id);
+                      }}
+                    >
+                      <Trash2 className="w-4 h-4 mr-2 opacity-70" />
+                      Delete
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               ))
             )}
           </div>
         </>
       )}
 
-      {/* ── Context menu (Depth tab) ────────────────────────────────────── */}
-      {ctxMenu && (
-        <div
-          className="fixed z-50 min-w-[140px] bg-popover border border-border rounded-md shadow-lg py-1 text-xs"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
-        >
-          {/* Move into group submenu items */}
-          {groups.length > 0 && (
-            <>
-              <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
-                Move into group
-              </div>
-              {groups.map(g => (
-                <button
-                  key={g.id}
-                  className="w-full text-left px-4 py-1 hover:bg-accent hover:text-accent-foreground transition-colors"
-                  onClick={() => {
-                    reparentNode(ctxMenu.nodeId, g.id);
-                    closeCtxMenu();
-                  }}
-                >
-                  {g.name}
-                </button>
-              ))}
-              <div className="border-t border-border my-1" />
-            </>
-          )}
-
-          {/* New group containing this node */}
-          <button
-            className="w-full text-left px-3 py-1 hover:bg-accent hover:text-accent-foreground transition-colors"
-            onClick={() => {
-              createGroup('Group');
-              // After createGroup, the new group is the last node added
-              // Reparent on next tick so the group exists
-              setTimeout(() => {
-                const allNodes = useProjectStore.getState().project.nodes;
-                const newGroup = [...allNodes].reverse().find(n => n.type === 'group');
-                if (newGroup) reparentNode(ctxMenu.nodeId, newGroup.id);
-              }, 0);
-              closeCtxMenu();
-            }}
-          >
-            New group with this
-          </button>
-
-          {/* Remove from group */}
-          {nodeMap.get(ctxMenu.nodeId)?.parent && (
-            <button
-              className="w-full text-left px-3 py-1 hover:bg-accent hover:text-accent-foreground transition-colors text-destructive"
-              onClick={() => {
-                reparentNode(ctxMenu.nodeId, null);
-                closeCtxMenu();
-              }}
-            >
-              Remove from group
-            </button>
-          )}
-        </div>
-      )}
     </div>
   );
 }

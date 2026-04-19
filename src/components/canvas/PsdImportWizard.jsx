@@ -1,9 +1,9 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { ChevronDown, ChevronRight, AlertTriangle, CheckCircle, Circle, Scissors } from 'lucide-react';
 import {
   loadDWPoseSession, runDWPose, buildArmatureNodes, analyzeGroups,
   matchTag, estimateSkeletonFromBounds, DWPOSE_URL, clearDWPoseSession,
-  KNOWN_TAGS,
+  KNOWN_TAGS, autoRearrangeLayers,
 } from '../../io/armatureOrganizer';
 import { splitLayerLR } from '../../io/splitLR';
 import { HelpIcon } from '../ui/help-icon';
@@ -22,6 +22,7 @@ export default function PsdImportWizard({
   onSplitArms,  // (rightLayer, leftLayer) → void  — replaces merged handwear with two layers
   onReorder,
   onApplyRig,
+  onUpdatePsd,
 }) {
   const { toast } = useToast();
   const [rigStatus, setRigStatus] = useState('');
@@ -185,6 +186,18 @@ export default function PsdImportWizard({
     }
   }, [step, effectiveLayers, psdW, psdH, partIds, meshAllParts, onFinalize, onApplyRig, onnxSessionRef]);
 
+  /* ── Effect: Auto-rearrange eye layers ────────────────────────────────── */
+  useEffect(() => {
+    if (!layers || !partIds || !onUpdatePsd) return;
+    const result = autoRearrangeLayers(layers, partIds);
+    if (result) {
+      onUpdatePsd(result);
+      toast({
+        title: "Layers Auto-Rearranged",
+        description: "Eye irides moved above eyewhite layers for proper depth.",
+      });
+    }
+  }, [layers, partIds, onUpdatePsd, toast]);
 
   /* ── Step: Review layer mapping ─────────────────────────────────────── */
   if (step === 'review') {

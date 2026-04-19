@@ -25,6 +25,9 @@ export class PartRenderer {
     this._parts = new Map();
   }
 
+  hasTexture(partId) { return !!this._parts.get(partId)?.texture; }
+  hasMesh(partId) { return !!this._parts.get(partId)?.vao; }
+
   // ── Upload ─────────────────────────────────────────────────────────────────
 
   /**

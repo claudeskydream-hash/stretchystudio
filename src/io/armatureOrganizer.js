@@ -624,3 +624,66 @@ export function getSkeletonFromNodes(nodes) {
   }
   return result;
 }
+
+/**
+ * Detects if eyewhite is on top of irides and returns a reordered layers/partIds if so.
+ * PSD order is top-to-bottom (index 0 is top). We want irides above eyewhite.
+ *
+ * @param {Array} layers   Flat layer array
+ * @param {Array} partIds  1:1 correlation with layers
+ * @returns {{layers, partIds} | null} Reordered data or null if no change needed
+ */
+export function autoRearrangeLayers(layers, partIds) {
+  const resultLayers = [...layers];
+  const resultPartIds = [...partIds];
+  let changed = false;
+
+  const pairs = [
+    { white: 'eyewhite', iris: 'irides' },
+    { white: 'eyewhite-l', iris: 'irides-l' },
+    { white: 'eyewhite-r', iris: 'irides-r' },
+  ];
+
+  for (const { white, iris } of pairs) {
+    const whiteIndices = [];
+    const irisIndices = [];
+    resultLayers.forEach((l, idx) => {
+      const tag = matchTag(l.name);
+      if (tag === white) whiteIndices.push(idx);
+      if (tag === iris) irisIndices.push(idx);
+    });
+
+    if (whiteIndices.length > 0 && irisIndices.length > 0) {
+      // PSD order: index 0 is TOP.
+      // We want Irides on top, so index(iris) < index(white).
+      // If ANY white has a LOWER index than ANY iris, it's on top.
+      const firstWhite = Math.min(...whiteIndices);
+      const lastIris = Math.max(...irisIndices);
+
+      if (firstWhite < lastIris) {
+        changed = true;
+        
+        // 1. Extract all irides for this side
+        const iridesToMove = [];
+        for (let i = resultLayers.length - 1; i >= 0; i--) {
+          if (matchTag(resultLayers[i].name) === iris) {
+            iridesToMove.push({ 
+              layer: resultLayers.splice(i, 1)[0], 
+              id: resultPartIds.splice(i, 1)[0] 
+            });
+          }
+        }
+        iridesToMove.reverse();
+
+        // 2. Find new insertion point (just before the first eyewhite)
+        const firstWhiteIdx = resultLayers.findIndex(l => matchTag(l.name) === white);
+        if (firstWhiteIdx !== -1) {
+          resultLayers.splice(firstWhiteIdx, 0, ...iridesToMove.map(it => it.layer));
+          resultPartIds.splice(firstWhiteIdx, 0, ...iridesToMove.map(it => it.id));
+        }
+      }
+    }
+  }
+
+  return changed ? { layers: resultLayers, partIds: resultPartIds } : null;
+}

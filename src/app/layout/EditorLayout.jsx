@@ -1,6 +1,7 @@
 import React, { useRef, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import { useEditorStore } from '@/store/editorStore';
+import { undo, redo, undoCount, redoCount } from '@/store/undoHistory';
 import {
   ResizableHandle,
   ResizablePanel,
@@ -14,7 +15,7 @@ import { AnimationListPanel } from '@/components/animation/AnimationListPanel';
 import { ArmaturePanel } from '@/components/armature/ArmaturePanel';
 import { ExportModal } from '@/components/export/ExportModal';
 import { PreferencesModal } from '@/components/preferences/PreferencesModal';
-import { Save, FolderOpen, FilePlus, Palette, Sun, Moon, SquareChartGantt, Download, Settings2 } from 'lucide-react';
+import { Save, FolderOpen, FilePlus, Palette, Sun, Moon, SquareChartGantt, Download, Settings2, Undo2, Redo2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -72,6 +73,7 @@ export default function EditorLayout() {
   const isAnimationMode = mode === 'animation';
   const wizardStep = useEditorStore(s => s.wizardStep);
   const project = useProjectStore(s => s.project);
+  const updateProject = useProjectStore(s => s.updateProject);
   const captureRestPose = useAnimationStore(s => s.captureRestPose);
 
   // Canvas properties
@@ -385,8 +387,9 @@ export default function EditorLayout() {
             >
               <Settings2 className="h-4 w-4" />
             </Button>
+
+            </div>
           </div>
-        </div>
 
         {/* Center Toggle */}
         {!wizardStep && (
@@ -431,6 +434,50 @@ export default function EditorLayout() {
                 <TooltipContent side="bottom">
                   In Animation mode, you create keyframes on the timeline.
                 </TooltipContent>
+              </Tooltip>
+
+              <div className="w-px h-4 bg-border/40 mx-2" />
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 rounded-md hover:bg-muted/80 disabled:opacity-30"
+                    disabled={undoCount() === 0}
+                    onClick={() => {
+                      undo(project, (snapshot) => {
+                        updateProject((proj) => {
+                          Object.assign(proj, snapshot);
+                        }, { skipHistory: true });
+                      });
+                    }}
+                  >
+                    <Undo2 className="h-3.5 w-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">Undo (Ctrl+Z)</TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 rounded-md hover:bg-muted/80 disabled:opacity-30 ml-0.5"
+                    disabled={redoCount() === 0}
+                    onClick={() => {
+                      redo(project, (snapshot) => {
+                        updateProject((proj) => {
+                          Object.assign(proj, snapshot);
+                        }, { skipHistory: true });
+                      });
+                    }}
+                  >
+                    <Redo2 className="h-3.5 w-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">Redo (Ctrl+Y)</TooltipContent>
               </Tooltip>
             </div>
           </TooltipProvider>

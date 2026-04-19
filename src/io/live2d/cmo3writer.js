@@ -559,8 +559,9 @@ export async function generateCmo3(input) {
   // Pre-create rotation parameters for bone nodes (needed by baked keyform meshes).
   // These are groups referenced as jointBoneId by meshes with boneWeights.
   // Created here (before per-mesh loop) so KeyformBindingSource can reference them.
-  const BAKED_ANGLE_MIN = -90;
-  const BAKED_ANGLE_MAX = 90;
+  const BAKED_ANGLES = [-90, -45, 0, 45, 90];
+  const BAKED_ANGLE_MIN = BAKED_ANGLES[0];
+  const BAKED_ANGLE_MAX = BAKED_ANGLES[BAKED_ANGLES.length - 1];
   const boneParamGuids = new Map(); // jointBoneId → { pidParam, paramId }
   for (const m of meshes) {
     if (m.jointBoneId && m.boneWeights && !boneParamGuids.has(m.jointBoneId)) {
@@ -1105,55 +1106,44 @@ export async function generateCmo3(input) {
     const [kfGridMesh, pidKfgMesh] = x.shared('KeyformGridSource');
 
     // Extra form GUIDs for baked keyforms (min/max angles) or closure (closed keyform)
-    let pidFormMin = null, pidFormMax = null, pidFormClosed = null;
+    let pidFormClosed = null;
+    let bakedFormGuids = null;
 
     if (hasBakedKeyforms) {
-      // 3 keyforms: angle at min, rest (0), angle at max — matching Hiyori art mesh pattern
-      const [, _pidFormMin] = x.shared('CFormGuid', { uuid: uuid(), note: `${meshName}_baked_min` });
-      const [, _pidFormMax] = x.shared('CFormGuid', { uuid: uuid(), note: `${meshName}_baked_max` });
-      pidFormMin = _pidFormMin;
-      pidFormMax = _pidFormMax;
-
+      // Multiple keyforms to reduce linear interpolation shrinkage
+      bakedFormGuids = [];
       const boneParam = boneParamGuids.get(m.jointBoneId);
 
-      const kfog = x.sub(kfGridMesh, 'array_list', { 'xs.n': 'keyformsOnGrid', count: '3' });
+      const kfog = x.sub(kfGridMesh, 'array_list', { 'xs.n': 'keyformsOnGrid', count: String(BAKED_ANGLES.length) });
 
-      // KeyformOnGrid[0] — angle at min
-      const kog0 = x.sub(kfog, 'KeyformOnGrid');
-      const ak0 = x.sub(kog0, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
-      const kop0 = x.sub(ak0, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
-      const kon0 = x.sub(kop0, 'KeyOnParameter');
-      x.subRef(kon0, 'KeyformBindingSource', pidKfb, { 'xs.n': 'binding' });
-      x.sub(kon0, 'i', { 'xs.n': 'keyIndex' }).text = '0';
-      x.subRef(kog0, 'CFormGuid', pidFormMin, { 'xs.n': 'keyformGuid' });
+      for (let i = 0; i < BAKED_ANGLES.length; i++) {
+        let pidForm;
+        if (BAKED_ANGLES[i] === 0) {
+          pidForm = pidFormMesh;
+        } else {
+          const [, _pid] = x.shared('CFormGuid', { uuid: uuid(), note: `${meshName}_baked_${BAKED_ANGLES[i]}` });
+          pidForm = _pid;
+        }
+        bakedFormGuids.push(pidForm);
 
-      // KeyformOnGrid[1] — rest (angle=0)
-      const kog1 = x.sub(kfog, 'KeyformOnGrid');
-      const ak1 = x.sub(kog1, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
-      const kop1 = x.sub(ak1, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
-      const kon1 = x.sub(kop1, 'KeyOnParameter');
-      x.subRef(kon1, 'KeyformBindingSource', pidKfb, { 'xs.n': 'binding' });
-      x.sub(kon1, 'i', { 'xs.n': 'keyIndex' }).text = '1';
-      x.subRef(kog1, 'CFormGuid', pidFormMesh, { 'xs.n': 'keyformGuid' });
-
-      // KeyformOnGrid[2] — angle at max
-      const kog2 = x.sub(kfog, 'KeyformOnGrid');
-      const ak2 = x.sub(kog2, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
-      const kop2 = x.sub(ak2, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
-      const kon2 = x.sub(kop2, 'KeyOnParameter');
-      x.subRef(kon2, 'KeyformBindingSource', pidKfb, { 'xs.n': 'binding' });
-      x.sub(kon2, 'i', { 'xs.n': 'keyIndex' }).text = '2';
-      x.subRef(kog2, 'CFormGuid', pidFormMax, { 'xs.n': 'keyformGuid' });
+        const kog = x.sub(kfog, 'KeyformOnGrid');
+        const ak = x.sub(kog, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
+        const kop = x.sub(ak, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
+        const kon = x.sub(kop, 'KeyOnParameter');
+        x.subRef(kon, 'KeyformBindingSource', pidKfb, { 'xs.n': 'binding' });
+        x.sub(kon, 'i', { 'xs.n': 'keyIndex' }).text = String(i);
+        x.subRef(kog, 'CFormGuid', pidForm, { 'xs.n': 'keyformGuid' });
+      }
 
       const kb = x.sub(kfGridMesh, 'array_list', { 'xs.n': 'keyformBindings', count: '1' });
       x.subRef(kb, 'KeyformBindingSource', pidKfb);
 
       x.subRef(kfBinding, 'KeyformGridSource', pidKfgMesh, { 'xs.n': '_gridSource' });
       x.subRef(kfBinding, 'CParameterGuid', boneParam.pidParam, { 'xs.n': 'parameterGuid' });
-      const keys = x.sub(kfBinding, 'array_list', { 'xs.n': 'keys', count: '3' });
-      x.sub(keys, 'f').text = String(BAKED_ANGLE_MIN) + '.0';
-      x.sub(keys, 'f').text = '0.0';
-      x.sub(keys, 'f').text = String(BAKED_ANGLE_MAX) + '.0';
+      const keys = x.sub(kfBinding, 'array_list', { 'xs.n': 'keys', count: String(BAKED_ANGLES.length) });
+      for (const ang of BAKED_ANGLES) {
+        x.sub(keys, 'f').text = ang.toFixed(1);
+      }
       x.sub(kfBinding, 'InterpolationType', { 'xs.n': 'interpolationType', v: 'LINEAR' });
       x.sub(kfBinding, 'ExtendedInterpolationType', { 'xs.n': 'extendedInterpolationType', v: 'LINEAR' });
       x.sub(kfBinding, 'i', { 'xs.n': 'insertPointCount' }).text = '1';
@@ -1222,7 +1212,7 @@ export async function generateCmo3(input) {
 
     perMesh.push({
       mi, meshName, meshId, pngPath, drawOrder: m.drawOrder ?? (500 + mi),
-      pidDrawable, pidFormMesh, pidFormMin, pidFormMax, pidFormClosed,
+      pidDrawable, pidFormMesh, bakedFormGuids, pidFormClosed,
       pidMiGuid, pidTexGuid, pidExtMesh, pidExtTex, pidEmesh,
       pidImg, pidLayer,
       pidFset, pidTex2d, pidTie, pidTimi,
@@ -4019,7 +4009,7 @@ export async function generateCmo3(input) {
     };
 
     if (pm.hasBakedKeyforms) {
-      // 3 keyforms: min angle, rest (0), max angle
+      // Keyforms to prevent interpolation shrinkage
       // Compute baked vertex positions by rotating each vertex around the elbow pivot
       // by angle × boneWeight. All positions in ARM deformer-local space.
       const weights = pm.boneWeights;
@@ -4046,10 +4036,13 @@ export async function generateCmo3(input) {
         return positions;
       };
 
-      const kfList = x.sub(meshSrc, 'carray_list', { 'xs.n': 'keyforms', count: '3' });
-      emitArtMeshForm(kfList, pm.pidFormMin, computeBakedPositions(BAKED_ANGLE_MIN));
-      emitArtMeshForm(kfList, pm.pidFormMesh, verts); // rest (angle=0, no rotation)
-      emitArtMeshForm(kfList, pm.pidFormMax, computeBakedPositions(BAKED_ANGLE_MAX));
+      const kfList = x.sub(meshSrc, 'carray_list', { 'xs.n': 'keyforms', count: String(BAKED_ANGLES.length) });
+      for (let i = 0; i < BAKED_ANGLES.length; i++) {
+        const ang = BAKED_ANGLES[i];
+        const pidForm = pm.bakedFormGuids[i];
+        const positions = (ang === 0) ? verts : computeBakedPositions(ang);
+        emitArtMeshForm(kfList, pidForm, positions);
+      }
     } else if (pm.hasEyelidClosure) {
       // 2 keyforms: closed (k=0, parabola-collapsed) and open (k=1, rest).
       // P7: closure curve = parabola fit to eyewhite's lower edge (per side).
