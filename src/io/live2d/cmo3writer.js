@@ -263,6 +263,16 @@ export async function generateCmo3(input) {
     }
   }
 
+  // Shared CParameterId per paramDef — needed so CRandomPoseSetting can
+  // reference params by xs.ref (Cubism's "Setting…" dialog in Animation mode
+  // shows an empty list if these refs are missing; the inline-only
+  // `<CParameterId xs.n="id" idstr="…"/>` pattern satisfies CParameterSource
+  // but not the random-pose array_list). Each paramDef gets a `pidId` field.
+  for (const pd of paramDefs) {
+    const [, pidId] = x.shared('CParameterId', { idstr: pd.id });
+    pd.pidId = pidId;
+  }
+
   // Root part GUID
   const [, pidPartGuid] = x.shared('CPartGuid', { uuid: uuid(), note: '__RootPart__' });
 
@@ -3860,7 +3870,7 @@ export async function generateCmo3(input) {
     x.sub(ps, 'f', { 'xs.n': 'maxValue' }).text = String(pd.max);
     x.sub(ps, 'f', { 'xs.n': 'defaultValue' }).text = String(pd.defaultVal);
     x.sub(ps, 'b', { 'xs.n': 'isRepeat' }).text = 'false';
-    x.sub(ps, 'CParameterId', { 'xs.n': 'id', idstr: pd.id });
+    x.subRef(ps, 'CParameterId', pd.pidId, { 'xs.n': 'id' });
     x.sub(ps, 'Type', { 'xs.n': 'paramType', v: 'NORMAL' });
     x.sub(ps, 's', { 'xs.n': 'name' }).text = pd.name;
     x.sub(ps, 's', { 'xs.n': 'description' }).text = '';
@@ -3993,10 +4003,31 @@ export async function generateCmo3(input) {
   const brushSet = x.sub(model, 'CArtPathBrushSetting', { 'xs.n': 'artPathBrushesSetting' });
   x.sub(brushSet, 'carray_list', { 'xs.n': 'brushes', count: '0' });
 
-  // CRandomPoseSettingManager with zero _settings — an empty manager is
-  // sufficient for parsing; the Editor lets users add poses after load.
+  // CRandomPoseSettingManager with ONE _settings entry listing every
+  // parameter. Empty _settings satisfied the parser but left Cubism's
+  // "Setting…" dialog (Animation mode → Playlist corner) blank, so users
+  // couldn't un-tick Opacity / bone-rotation params before running
+  // Random Pose. All params default to isEnable=true; groups array_lists
+  // stay empty (the flat param list is enough; the dialog groups visually
+  // by the CParameterSource's CParameterGroupGuid anyway).
   const randomPose = x.sub(model, 'CRandomPoseSettingManager', { 'xs.n': 'randomPoseSetting' });
-  x.sub(randomPose, 'array_list', { 'xs.n': '_settings', count: '0' });
+  const rpSettings = x.sub(randomPose, 'array_list', { 'xs.n': '_settings', count: '1' });
+  const rpSetting = x.sub(rpSettings, 'CRandomPoseSetting');
+  const rpKeys = x.sub(rpSetting, 'array_list', {
+    'xs.n': 'parameters.keys', count: String(paramDefs.length),
+  });
+  for (const pd of paramDefs) {
+    x.subRef(rpKeys, 'CParameterId', pd.pidId);
+  }
+  const rpVals = x.sub(rpSetting, 'array_list', {
+    'xs.n': 'parameters.values', count: String(paramDefs.length),
+  });
+  for (let i = 0; i < paramDefs.length; i++) {
+    const entry = x.sub(rpVals, 'CRandomPoseParamData');
+    x.sub(entry, 'b', { 'xs.n': 'isEnable' }).text = 'true';
+  }
+  x.sub(rpSetting, 'array_list', { 'xs.n': 'groups.keys', count: '0' });
+  x.sub(rpSetting, 'array_list', { 'xs.n': 'groups.values', count: '0' });
   x.sub(randomPose, 'i', { 'xs.n': 'currentIndex' }).text = '0';
 
   // ==================================================================
