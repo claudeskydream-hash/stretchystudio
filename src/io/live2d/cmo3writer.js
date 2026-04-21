@@ -1825,69 +1825,60 @@ export async function generateCmo3(input) {
         return pos;
       },
     }],
-    // ── Skirt sway (Session 29): hem (bottom row) swings, waist (top row) pinned.
-    // Cubic frac³ gradient mirrors hair behavior so attachment at the waist is
-    // rigid while fabric flaring at the hem feels loose. Magnitude kept small
-    // (6% X / 2% Y of grid span) — the visual effect is subtle but visible at
-    // BodyAngleX/Z extremes; physics output param amplifies via pendulum lag.
+    // ── Clothing hem sway (bottomwear / topwear / legwear) ──
+    // KEY CONSTRAINT: clothing layers stack over body / legwear / other
+    // garments. ANY Y-motion at the hem lifts the fabric and exposes the
+    // layer underneath — on girl this showed the legwear's top edge peeking
+    // through the hoodie hem after physics simulated. So:
+    //   Y curl = 0 for all clothing (hair keeps its Y curl because hair is
+    //            rendered on top of everything; no stacking issue).
+    //   X sway kept small, dominated by the very bottom row via frac^4
+    //   gradient (steeper than hair's frac^3 — middle rows barely move).
+    //
+    // The physics pendulum's phase lag sells the motion even at tiny
+    // geometry shifts. Per-character tuning can bump `outputScale` in
+    // PHYSICS_RULES if a specific design (flared skirt, loose tunic) needs
+    // wider visible swing.
     ['bottomwear', {
       bindings: [{ pid: pidParamSkirt, keys: [-1, 0, 1], desc: 'ParamSkirt' }],
-      shiftFn: (grid, gW, gH, [k], gxS, gyS) => {
+      shiftFn: (grid, gW, gH, [k], gxS) => {
         const pos = new Float64Array(grid);
         if (k === 0) return pos;
         for (let r = 0; r < gH; r++) {
           const frac = r / (gH - 1);          // 0=waist(top), 1=hem(bottom)
-          const swayW = frac * frac * frac;
-          const curlW = frac * frac * frac;
+          const swayW = frac * frac * frac * frac;
           for (let c = 0; c < gW; c++) {
-            const idx = (r * gW + c) * 2;
-            pos[idx]     += k * 0.06 * gxS * swayW;
-            pos[idx + 1] += k * 0.02 * gyS * curlW;
+            pos[(r * gW + c) * 2] += k * 0.04 * gxS * swayW;
           }
         }
         return pos;
       },
     }],
-    // ── Shirt hem sway (topwear bottom edge) ──
-    // Magnitude ~4% X / 1% Y — fitted tops have narrower fabric movement than
-    // skirts. Top rows (shoulders / arms) stay pinned so sleeves don't get
-    // dragged along; only the hem flexes. Requires PSD splitting for proper
-    // sleeve physics; this gives a subtle hem flap that reads as alive.
     ['topwear', {
       bindings: [{ pid: pidParamShirt, keys: [-1, 0, 1], desc: 'ParamShirt' }],
-      shiftFn: (grid, gW, gH, [k], gxS, gyS) => {
+      shiftFn: (grid, gW, gH, [k], gxS) => {
         const pos = new Float64Array(grid);
         if (k === 0) return pos;
         for (let r = 0; r < gH; r++) {
           const frac = r / (gH - 1);          // 0=shoulders(top), 1=hem(bottom)
-          const swayW = frac * frac * frac;
-          const curlW = frac * frac * frac;
+          const swayW = frac * frac * frac * frac;
           for (let c = 0; c < gW; c++) {
-            const idx = (r * gW + c) * 2;
-            pos[idx]     += k * 0.04 * gxS * swayW;
-            pos[idx + 1] += k * 0.01 * gyS * curlW;
+            pos[(r * gW + c) * 2] += k * 0.015 * gxS * swayW;
           }
         }
         return pos;
       },
     }],
-    // ── Pants hem sway (legwear bottom edge) ──
-    // Even smaller magnitude (~2.5% X / 0.6% Y) since pants are typically
-    // fitted at ankles. For flared pants / long dresses the physics pendulum
-    // output scale amplifies the visible motion via phase lag.
     ['legwear', {
       bindings: [{ pid: pidParamPants, keys: [-1, 0, 1], desc: 'ParamPants' }],
-      shiftFn: (grid, gW, gH, [k], gxS, gyS) => {
+      shiftFn: (grid, gW, gH, [k], gxS) => {
         const pos = new Float64Array(grid);
         if (k === 0) return pos;
         for (let r = 0; r < gH; r++) {
           const frac = r / (gH - 1);          // 0=waist(top), 1=ankles(bottom)
-          const swayW = frac * frac * frac;
-          const curlW = frac * frac * frac;
+          const swayW = frac * frac * frac * frac;
           for (let c = 0; c < gW; c++) {
-            const idx = (r * gW + c) * 2;
-            pos[idx]     += k * 0.025 * gxS * swayW;
-            pos[idx + 1] += k * 0.006 * gyS * curlW;
+            pos[(r * gW + c) * 2] += k * 0.008 * gxS * swayW;
           }
         }
         return pos;
