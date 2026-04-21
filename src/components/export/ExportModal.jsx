@@ -47,6 +47,7 @@ export function ExportModal({ open, onClose, captureRef, projectName, projectId 
   const [modelName, setModelName] = useState('model');
   const [atlasSize, setAtlasSize] = useState(2048);
   const [generateRig, setGenerateRig] = useState(true);
+  const [generatePhysics, setGeneratePhysics] = useState(true);
   // Track whether user has explicitly edited the model-name field. While
   // untouched, the field auto-syncs to the current project's name on every
   // open — so loading a new project and then exporting shows the right default.
@@ -116,6 +117,7 @@ export function ExportModal({ open, onClose, captureRef, projectName, projectId 
         const blob = await exportLive2DProject(project, images, {
           modelName: name,
           generateRig,
+          generatePhysics,
           onProgress: (msg) =>
             setProgress(p => (p ? { ...p, label: msg } : null)),
         });
@@ -157,7 +159,7 @@ export function ExportModal({ open, onClose, captureRef, projectName, projectId 
       setProgress(null);
       setIsExporting(false);
     }
-  }, [project, modelName, atlasSize, type, generateRig, onClose]);
+  }, [project, modelName, atlasSize, type, generateRig, generatePhysics, onClose]);
 
   const handleExport = useCallback(async () => {
     if (type === 'live2d' || type === 'live2d_project') {
@@ -437,6 +439,25 @@ export function ExportModal({ open, onClose, captureRef, projectName, projectId 
                       Generate standard Live2D rig
                       <span className="block text-muted-foreground font-normal">
                         Adds warp deformers, standard parameters (ParamAngleX/Y/Z, ParamBody, etc.), and face-part deformer hierarchy
+                      </span>
+                    </Label>
+                  </div>
+                )}
+                {type === 'live2d_project' && generateRig && (
+                  <div className="flex items-start gap-2">
+                    <Checkbox
+                      id="generatePhysics"
+                      checked={generatePhysics}
+                      onCheckedChange={setGeneratePhysics}
+                      disabled={isExporting}
+                      className="mt-0.5"
+                    />
+                    <Label htmlFor="generatePhysics" className="text-xs cursor-pointer leading-relaxed">
+                      Generate physics (hair + clothing swing)
+                      <span className="block text-muted-foreground font-normal">
+                        Adds pendulum simulations for <code>front hair</code>, <code>back hair</code>, <code>topwear</code>,{' '}
+                        <code>bottomwear</code>, <code>legwear</code>. Rules auto-skip when the matching tag isn&apos;t present,
+                        so short-haired / bare-armed characters drop unused rules automatically.
                       </span>
                     </Label>
                   </div>

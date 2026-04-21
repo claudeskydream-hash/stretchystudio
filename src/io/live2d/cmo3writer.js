@@ -1854,6 +1854,13 @@ export async function generateCmo3(input) {
         return pos;
       },
     }],
+    // topwear uses a QUADRATIC (frac^2) gradient — milder than the other
+    // clothing tags' frac^4 — so that the middle rows (where sleeves and
+    // sleeve cuffs live on a hoodie/jacket) still get ~25% of the hem's
+    // amplitude. This lets sleeves visibly swing along with the hem instead
+    // of staying pinned to the shoulders. Safe because clothing Y is
+    // already zero — no vertical motion can expose hidden layers
+    // regardless of how much X the mid-rows pick up.
     ['topwear', {
       bindings: [{ pid: pidParamShirt, keys: [-1, 0, 1], desc: 'ParamShirt' }],
       shiftFn: (grid, gW, gH, [k], gxS) => {
@@ -1861,9 +1868,9 @@ export async function generateCmo3(input) {
         if (k === 0) return pos;
         for (let r = 0; r < gH; r++) {
           const frac = r / (gH - 1);          // 0=shoulders(top), 1=hem(bottom)
-          const swayW = frac * frac * frac * frac;
+          const swayW = frac * frac;           // quadratic: sleeves mid-row get ~0.25x
           for (let c = 0; c < gW; c++) {
-            pos[(r * gW + c) * 2] += k * 0.015 * gxS * swayW;
+            pos[(r * gW + c) * 2] += k * 0.02 * gxS * swayW;
           }
         }
         return pos;
