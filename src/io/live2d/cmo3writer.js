@@ -3826,6 +3826,16 @@ export async function generateCmo3(input) {
   // that Cubism's Random Pose Setting dialog uses to key its group tree. Without
   // it + labelColor, the dialog renders blank because it can't resolve the
   // group's display identity.
+  // Root Parameter Group entity (v14 required) — mirrors Hiyori's root
+  // group at fileFormatVersion 402030000. Shape is:
+  //   name, description, folderIsOpened, guid, parentGroupGuid (null),
+  //   _childGuids (flat — CParameterGuid refs for all params),
+  //   id (CParameterGroupId ref), visibilityColor* (four 1.0 floats).
+  //
+  // Previous blank-load failure was ClassNotFoundException: CParameterGroupId
+  // — root cause was a missing IMPORT_PI (now in cmo3/constants.js). The
+  // `<CParameterGroupId>` and `<f visibilityColor*>` fields themselves are
+  // correct at this fileFormatVersion (Hiyori has both).
   const [, pidRootPgId] = x.shared('CParameterGroupId', { idstr: 'ParamGroupRoot' });
   const [rootPgNode, pidRootPgEntity] = x.shared('CParameterGroup');
   x.sub(rootPgNode, 's', { 'xs.n': 'name' }).text = 'Root Parameter Group';
@@ -3840,10 +3850,6 @@ export async function generateCmo3(input) {
     x.subRef(pgChildList, 'CParameterGuid', pd.pid);
   }
   x.subRef(rootPgNode, 'CParameterGroupId', pidRootPgId, { 'xs.n': 'id' });
-  // visibilityColor* fields at fileFormatVersion 402030000 (Cubism 4.2).
-  // A `<CLabelColor>` sub-element here is the Cubism 5.0 (500000005+)
-  // pattern — emitting it at 402030000 fails the parser silently and the
-  // whole project loads blank. Match Hiyori's exact shape instead.
   x.sub(rootPgNode, 'f', { 'xs.n': 'visibilityColorRed' }).text = '1.0';
   x.sub(rootPgNode, 'f', { 'xs.n': 'visibilityColorGreen' }).text = '1.0';
   x.sub(rootPgNode, 'f', { 'xs.n': 'visibilityColorBlue' }).text = '1.0';

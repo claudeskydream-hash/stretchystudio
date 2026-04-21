@@ -69,6 +69,7 @@ export const IMPORT_PIS = [
   'com.live2d.cubism.doc.model.extension.textureInput.inputFilter.ModelImageFilterSet',
   'com.live2d.cubism.doc.model.id.CDeformerId',
   'com.live2d.cubism.doc.model.id.CDrawableId',
+  'com.live2d.cubism.doc.model.id.CParameterGroupId',
   'com.live2d.cubism.doc.model.id.CParameterId',
   'com.live2d.cubism.doc.model.id.CPartId',
   'com.live2d.cubism.doc.model.id.CPhysicsSettingId',
