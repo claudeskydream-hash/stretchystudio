@@ -5,7 +5,7 @@
 // optionally greps for a pattern. Use to verify what emitted in a deployed export.
 
 import { readFileSync } from 'node:fs';
-import { gunzipSync, inflateRawSync } from 'node:zlib';
+import { inflateRawSync, createInflateRaw } from 'node:zlib';
 
 const [, , path, pattern] = process.argv;
 if (!path) {
@@ -13,7 +13,7 @@ if (!path) {
   process.exit(1);
 }
 
-const buf = new Uint8Array(readFileSync(path));
+const buf = Uint8Array.from(readFileSync(path));
 const td = new TextDecoder();
 
 // CAFF header
@@ -66,9 +66,12 @@ for (let i = 0; i < fileCount; i++) {
   pos = p2;
   const { str: tag, pos: p3 } = readStr(buf, pos, obfKey & 0xFF);
   pos = p3;
-  // int64 startPos (XOR'd with mask)
+  // int64 startPos (XOR'd with mask) — see caffPacker.createInt64Mask:
+  // for negative int32 keys the upper 32 bits are all 1s, not the low word
+  // sign-extended by hand. Without this fix the Hiyori reference (negative
+  // obfKey) decodes to garbage startPos values → zero-length slices.
   const maskLow = BigInt(obfKey) & 0xFFFFFFFFn;
-  const maskHi = BigInt(obfKey) & 0xFFFFFFFFn;
+  const maskHi = obfKey < 0 ? 0xFFFFFFFFn : (BigInt(obfKey) & 0xFFFFFFFFn);
   const mask = (maskHi << 32n) | maskLow;
   const rawStart = dv.getBigUint64(pos, false);
   const startPos = Number((rawStart ^ mask) & 0xFFFFFFFFFFFFFFFFn);
@@ -104,7 +107,11 @@ let xml;
 if (mainEntry.compress === 16) {
   xml = td.decode(mainBytes);
 } else {
-  // ZIP: local header signature = 0x04034b50. Entry: 30 + fileName.length + content (compressed, deflate-raw)
+  // ZIP: local header signature = 0x04034b50.
+  // Our packer writes a complete ZIP (local header + content + central dir + EOCD)
+  // with compSize set in the local header. Cubism Editor uses a streaming variant:
+  // local header has compSize=0, data descriptor follows the compressed stream,
+  // and there's no central directory / EOCD inside this CAFF entry. Handle both.
   const zdv = new DataView(mainBytes.buffer, mainBytes.byteOffset, mainBytes.byteLength);
   const sig = zdv.getUint32(0, true);
   if (sig !== 0x04034b50) {
@@ -112,14 +119,44 @@ if (mainEntry.compress === 16) {
     process.exit(4);
   }
   const method = zdv.getUint16(8, true);
+  const flags = zdv.getUint16(6, true);
   const compSize = zdv.getUint32(18, true);
   const fnLen = zdv.getUint16(26, true);
   const extraLen = zdv.getUint16(28, true);
   const contentStart = 30 + fnLen + extraLen;
-  const compContent = mainBytes.slice(contentStart, contentStart + compSize);
-  const decomp = method === 8 ? inflateRawSync(compContent) : method === 0 ? compContent : null;
-  if (!decomp) { console.error('unknown zip method', method); process.exit(5); }
-  xml = td.decode(decomp);
+  let compContent;
+  if ((flags & 0x08) && compSize === 0) {
+    // Data descriptor follows the stream (last 16 bytes: sig + crc + compSize + uncompSize).
+    // Trust the descriptor's compSize — but if it disagrees with the physical bounds,
+    // fall back to streaming inflate over everything between contentStart and descriptor.
+    const descOff = mainBytes.length - 16;
+    const descSig = zdv.getUint32(descOff, true);
+    if (descSig === 0x08074b50) {
+      compContent = mainBytes.slice(contentStart, descOff);
+    } else {
+      compContent = mainBytes.slice(contentStart);
+    }
+  } else {
+    compContent = mainBytes.slice(contentStart, contentStart + compSize);
+  }
+  if (method !== 8 && method !== 0) {
+    console.error('unknown zip method', method); process.exit(5);
+  }
+  if (method === 0) {
+    xml = td.decode(compContent);
+  } else {
+    // Stream inflate — tolerates a descriptor at the end of the stream.
+    const chunks = [];
+    const inflate = createInflateRaw();
+    await new Promise((resolve) => {
+      inflate.on('data', c => chunks.push(c));
+      inflate.on('end', resolve);
+      inflate.on('error', resolve);
+      inflate.end(compContent);
+    });
+    const total = Buffer.concat(chunks);
+    xml = td.decode(total);
+  }
 }
 
 console.log('[inspect] main.xml size:', xml.length, 'bytes');
