@@ -3,7 +3,6 @@
  * 
  * Logic to export the Stretchy Studio project to Spine 4.0 JSON format.
  */
-import { computeWorldMatrices } from '@/renderer/transforms';
 
 /**
  * Main entry point for Spine export.
@@ -19,10 +18,11 @@ export async function exportToSpine({ project, onProgress }) {
 
   onProgress?.('Collecting textures...');
   const imagesFolder = zip.folder('images');
-  
+  const atlasPages = [];
+
   for (const node of project.nodes) {
     if (node.type !== 'part') continue;
-    
+
     const tex = project.textures.find(t => t.id === node.id) || project.textures.find(t => t.id === node.textureId);
     if (!tex || !tex.source) continue;
 
@@ -30,13 +30,30 @@ export async function exportToSpine({ project, onProgress }) {
       const response = await fetch(tex.source);
       const blob = await response.blob();
       const ext = blob.type === 'image/webp' ? 'webp' : 'png';
-      const filename = `${sanitizeName(node.name)}.${ext}`;
+      const region = sanitizeName(node.name);
+      const filename = `${region}.${ext}`;
       imagesFolder.file(filename, blob);
+
+      // Read true pixel dimensions so the atlas region matches the source image.
+      let w = node.imageWidth ?? 0;
+      let h = node.imageHeight ?? 0;
+      try {
+        const bmp = await createImageBitmap(blob);
+        w = bmp.width;
+        h = bmp.height;
+        bmp.close?.();
+      } catch { /* fall back to node dimensions */ }
+
+      atlasPages.push({ page: `images/${filename}`, region, w, h });
       onProgress?.(`Packing image: ${filename}`);
     } catch (err) {
       console.warn(`[Spine Export] Failed to fetch texture for ${node.name}:`, err);
     }
   }
+
+  // skeleton.atlas lets Spine auto-resolve every region attachment to its image
+  // on Import Data — no manual "images path" setup needed in the editor.
+  zip.file('skeleton.atlas', buildSpineAtlas(atlasPages));
 
   onProgress?.('Generating ZIP...');
   const zipBlob = await zip.generateAsync({ type: 'blob' });
@@ -59,7 +76,7 @@ export async function exportToSpine({ project, onProgress }) {
  *   boneX = childSpineWorldX - parentSpineWorldX
  *   boneY = childSpineWorldY - parentSpineWorldY
  */
-function buildSpineJson(project) {
+export function buildSpineJson(project) {
   const { width: canvasW, height: canvasH } = project.canvas;
   const nodes = project.nodes;
 
@@ -109,22 +126,24 @@ function buildSpineJson(project) {
 
   // ── 2. Bones ──────────────────────────────────────────────────────────────
   // Spine requires every file to have a bone named exactly "root" with no parent.
-  const groups = nodes.filter(n => n.type === 'group');
+  const boneNodes = nodes.filter(n => n.type !== 'part');
+  const boneNameById = buildUniqueNameMap(boneNodes, new Set(['root']));
+  const slotNameById = buildUniqueNameMap(partsFromNodes(nodes), new Set());
   const bones = [{ name: 'root' }];
   const processedBones = new Set(['root']);
-  let remaining = [...groups];
+  let remaining = [...boneNodes];
 
   while (remaining.length > 0) {
     const startCount = remaining.length;
-    remaining = remaining.filter(group => {
-      const parentName = group.parent ? nodeNameById(nodes, group.parent) : 'root';
+    remaining = remaining.filter(node => {
+      const parentName = node.parent ? (boneNameById.get(node.parent) ?? 'root') : 'root';
       if (!processedBones.has(parentName)) return true; // parent not yet processed
 
-      const t = group.transform || {};
-      const pos = getLocalSpineOffset(group);
+      const t = node.transform || {};
+      const pos = getLocalSpineOffset(node);
 
       bones.push({
-        name: sanitizeName(group.name),
+        name: boneNameById.get(node.id),
         parent: parentName,
         x: pos.x,
         y: pos.y,
@@ -132,7 +151,7 @@ function buildSpineJson(project) {
         scaleX: t.scaleX ?? 1,
         scaleY: t.scaleY ?? 1,
       });
-      processedBones.add(sanitizeName(group.name));
+      processedBones.add(boneNameById.get(node.id));
       return false;
     });
 
@@ -140,22 +159,21 @@ function buildSpineJson(project) {
       // Cycle / missing parent — attach orphans directly to root
       remaining.forEach(g => {
         const pos = getLocalSpineOffset(g);
-        bones.push({ name: sanitizeName(g.name), parent: 'root', x: pos.x, y: pos.y });
-        processedBones.add(sanitizeName(g.name));
+        bones.push({ name: boneNameById.get(g.id), parent: 'root', x: pos.x, y: pos.y });
+        processedBones.add(boneNameById.get(g.id));
       });
       break;
     }
   }
 
   // ── 3. Slots ──────────────────────────────────────────────────────────────
-  const parts = [...nodes]
-    .filter(n => n.type === 'part')
+  const parts = partsFromNodes(nodes)
     .sort((a, b) => (a.draw_order ?? 0) - (b.draw_order ?? 0));
 
   const slots = parts.map(part => ({
-    name: sanitizeName(part.name),
-    bone: part.parent ? nodeNameById(nodes, part.parent) : 'root',
-    attachment: sanitizeName(part.name),
+    name: slotNameById.get(part.id),
+    bone: part.parent ? (boneNameById.get(part.parent) ?? 'root') : 'root',
+    attachment: slotNameById.get(part.id),
   }));
 
   // ── 4. Skins ──────────────────────────────────────────────────────────────
@@ -170,7 +188,11 @@ function buildSpineJson(project) {
 
     const attachment = {
       type: "region",
-      name: sanitizeName(part.name),
+      name: slotNameById.get(part.id),
+      // Bare region name. Image resolution is handled by the generated
+      // skeleton.atlas, whose region names match these paths and whose pages
+      // point at images/<name>.png. Spine auto-loads that atlas on Import Data.
+      path: sanitizeName(part.name),
       x: pos.x,
       y: pos.y,
       rotation: -(t.rotation || 0),
@@ -178,14 +200,7 @@ function buildSpineJson(project) {
       height: part.imageHeight ?? canvasH,
     };
 
-    if (part.mesh) {
-      attachment.type = "mesh";
-      attachment.vertices = part.mesh.vertices;
-      attachment.uvs = part.mesh.uvs;
-      attachment.triangles = part.mesh.triangles;
-    }
-
-    const slotKey = sanitizeName(part.name);
+    const slotKey = slotNameById.get(part.id);
     if (!skinAttachments[slotKey]) skinAttachments[slotKey] = {};
     skinAttachments[slotKey][slotKey] = attachment;
   }
@@ -210,8 +225,12 @@ function buildSpineJson(project) {
       const node = nodes.find(n => n.id === nodeId);
       if (!node) continue;
 
-      const targetName = sanitizeName(node.name);
-      const isBone = node.type === 'group';
+      const targetName = node.type === 'part'
+        ? slotNameById.get(node.id)
+        : boneNameById.get(node.id);
+      if (!targetName) continue;
+
+      const isBone = node.type !== 'part';
 
       if (isBone) {
         if (!spineAnim.bones[targetName]) spineAnim.bones[targetName] = {};
@@ -277,15 +296,128 @@ function buildSpineJson(project) {
       }
     }
 
+    convertCssCurves(spineAnim);
     animations[animName] = spineAnim;
   }
 
-  return { skeleton, bones, slots, skins, animations };
+  const result = { skeleton, bones, slots, skins, animations };
+  validateSpineJson(result);
+  return result;
 }
 
-function nodeNameById(nodes, id) {
-  const n = nodes.find(x => x.id === id);
-  return n ? sanitizeName(n.name) : 'root';
+function partsFromNodes(nodes) {
+  return nodes.filter(n => n.type === 'part');
+}
+
+/**
+ * Builds a Spine .atlas file with one full-image page per texture.
+ * Region names match the attachment `path` values, and each page points at the
+ * matching file under images/, so Spine links every attachment automatically.
+ */
+function buildSpineAtlas(pages) {
+  return pages.map(({ page, region, w, h }) =>
+`${page}
+size: ${w},${h}
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+${region}
+  rotate: false
+  xy: 0, 0
+  size: ${w}, ${h}
+  orig: ${w}, ${h}
+  offset: 0, 0
+  index: -1`
+  ).join('\n\n') + '\n';
+}
+
+function buildUniqueNameMap(items, reserved = new Set()) {
+  const used = new Set(reserved);
+  const map = new Map();
+
+  for (const item of items) {
+    const base = sanitizeName(item.name) || sanitizeName(item.id) || 'item';
+    let name = base;
+    let suffix = 2;
+    while (used.has(name)) {
+      name = `${base}_${suffix}`;
+      suffix += 1;
+    }
+    used.add(name);
+    map.set(item.id, name);
+  }
+
+  return map;
+}
+
+function validateSpineJson(data) {
+  const boneNames = new Set();
+  const duplicateBones = [];
+
+  for (const bone of data.bones) {
+    if (boneNames.has(bone.name)) duplicateBones.push(bone.name);
+    boneNames.add(bone.name);
+  }
+
+  const missingSlotBones = data.slots
+    .filter(slot => !boneNames.has(slot.bone))
+    .map(slot => `${slot.name}->${slot.bone}`);
+
+  if (duplicateBones.length || missingSlotBones.length) {
+    throw new Error(
+      `[Spine Export] Invalid skeleton: duplicate bones=${duplicateBones.join(', ') || 'none'}; ` +
+      `missing slot bones=${missingSlotBones.join(', ') || 'none'}`
+    );
+  }
+}
+
+function convertCssCurves(animation) {
+  for (const bone of Object.values(animation.bones)) {
+    convertTimelineCurves(bone.translate, ['x', 'y']);
+    convertTimelineCurves(bone.rotate, ['value']);
+    convertTimelineCurves(bone.scale, ['x', 'y']);
+  }
+
+  for (const slot of Object.values(animation.slots)) {
+    convertTimelineCurves(slot.rgba, ['r', 'g', 'b', 'a'], colorChannels);
+  }
+}
+
+function convertTimelineCurves(timeline, valueNames, getValues = (frame) => valueNames.map(name => frame[name])) {
+  if (!Array.isArray(timeline)) return;
+
+  for (let index = 0; index < timeline.length; index += 1) {
+    const frame = timeline[index];
+    const cssCurve = frame._cssCurve;
+    delete frame._cssCurve;
+
+    if (!cssCurve || index === timeline.length - 1) continue;
+
+    const next = timeline[index + 1];
+    const duration = next.time - frame.time;
+    if (!(duration > 0)) continue;
+
+    const values = getValues(frame);
+    const nextValues = getValues(next);
+    const curve = [];
+    for (let channel = 0; channel < valueNames.length; channel += 1) {
+      const start = values[channel];
+      const end = nextValues[channel];
+      const delta = end - start;
+      curve.push(
+        frame.time + duration * cssCurve[0],
+        start + delta * cssCurve[1],
+        frame.time + duration * cssCurve[2],
+        start + delta * cssCurve[3],
+      );
+    }
+    frame.curve = curve;
+  }
+}
+
+function colorChannels(frame) {
+  const color = frame.color || 'ffffffff';
+  return [0, 2, 4, 6].map(offset => parseInt(color.slice(offset, offset + 2), 16) / 255);
 }
 
 function sanitizeName(name) {
@@ -297,18 +429,19 @@ function sanitizeName(name) {
 }
 
 function applySpineCurve(entry, kf) {
-  if (kf.easing === 'linear') return; 
   if (kf.easing === 'stepped') {
     entry.curve = 'stepped';
-  } else if (Array.isArray(kf.easing) && kf.easing.length === 4) {
-    entry.curve = kf.easing;
+    return;
+  }
+
+  if (Array.isArray(kf.easing) && kf.easing.length === 4) {
+    entry._cssCurve = kf.easing;
   } else if (kf.easing === 'ease-in') {
-    entry.curve = [0.42, 0, 1, 1];
+    entry._cssCurve = [0.42, 0, 1, 1];
   } else if (kf.easing === 'ease-out') {
-    entry.curve = [0, 0, 0.58, 1];
-  } else {
-    // Default or 'ease-both' / 'ease' -> Ease Both
-    entry.curve = [0.42, 0, 0.58, 1];
+    entry._cssCurve = [0, 0, 0.58, 1];
+  } else if (kf.easing && kf.easing !== 'linear') {
+    entry._cssCurve = [0.42, 0, 0.58, 1];
   }
 }
 

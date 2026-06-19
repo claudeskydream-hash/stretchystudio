@@ -66,3 +66,6 @@ shelby.png
 *.jfif
 frames/
 frames */
+
+# Large downloaded ML models (exceed GitHub 100MB limit)
+public/models/

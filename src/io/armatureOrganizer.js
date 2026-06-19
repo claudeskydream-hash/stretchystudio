@@ -21,8 +21,6 @@ async function _ensureOrt() {
     // Support both namespace and default export styles depending on bundler behavior
     const instance = module.env ? module : (module.default || module);
     
-    // Point wasm runtime at CDN to avoid bundling the large .wasm files
-    instance.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/';
     return instance;
   })();
   
@@ -240,9 +238,8 @@ export function estimateSkeletonFromBounds(layers, psdW, psdH) {
 
 /* ─── DWPose ONNX inference ─────────────────────────────────────────────────── */
 
-const DWPOSE_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5/pose_landmark_full.tflite';
 // The actual DWPose model — whole-body 133-point, 288×384 input
-export const DWPOSE_URL = 'https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.onnx';
+export const DWPOSE_URL = '/models/dwpose/dw-ll_ucoco_384.onnx';
 
 /** Cache the session across imports so we only download / compile once. */
 let _cachedSession = null;

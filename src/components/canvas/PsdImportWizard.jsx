@@ -445,9 +445,9 @@ export default function PsdImportWizard({
       <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70">
         <div className="bg-popover border border-border rounded-lg shadow-2xl p-6 max-w-sm w-full mx-4 flex flex-col gap-4">
           <div>
-            <h3 className="text-sm font-semibold text-foreground mb-1">Load DWPose model</h3>
+            <h3 className="text-sm font-semibold text-foreground mb-1">DWPose local model</h3>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Download or upload the ~50 MB DWPose ONNX model for high-accuracy pose detection.
+              The bundled DWPose ONNX model is already stored locally. Start local detection or upload a custom model.
             </p>
           </div>
 
@@ -455,16 +455,16 @@ export default function PsdImportWizard({
           <div className="p-2 rounded bg-muted border border-border">
             <p className="text-xs text-muted-foreground">
               Status: {modelLoaded ? (
-                <span className="text-green-500 font-medium">Loaded ✓</span>
+                <span className="text-green-500 font-medium">Loaded in memory</span>
               ) : (
-                <span className="text-amber-500">Not loaded</span>
+                <span className="text-green-500 font-medium">Local model ready</span>
               )}
             </p>
           </div>
 
           {/* Load buttons */}
           <div className="flex flex-col gap-2">
-            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Load Model</div>
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Run DWPose</div>
             <div className="flex gap-2">
               {/* Local .onnx file */}
               <label className={[
@@ -485,13 +485,13 @@ export default function PsdImportWizard({
                 />
               </label>
 
-              {/* Download from HuggingFace */}
+              {/* Bundled local model */}
               <button
                 disabled={rigLoading}
                 className="flex-1 px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium disabled:opacity-40"
                 onClick={() => runArmatureRig(DWPOSE_URL)}
               >
-                {rigLoading ? 'Working…' : 'Download'}
+                {rigLoading ? 'Working…' : 'Start local'}
               </button>
             </div>
 
