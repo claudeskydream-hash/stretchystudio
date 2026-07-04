@@ -3,7 +3,8 @@ import { useEditorStore } from '@/store/editorStore';
 import { useTheme } from '@/contexts/ThemeProvider';
 import { useProjectStore, DEFAULT_TRANSFORM } from '@/store/projectStore';
 import { useAnimationStore } from '@/store/animationStore';
-import { computePoseOverrides, KEYFRAME_PROPS, getNodePropertyValue, upsertKeyframe } from '@/renderer/animationEngine';
+import { computePoseOverrides, computeParameterDrivenOverrides, KEYFRAME_PROPS, getNodePropertyValue, upsertKeyframe } from '@/renderer/animationEngine';
+import { useParameterStore } from '@/store/parameterStore';
 import { ScenePass } from '@/renderer/scenePass';
 import { importPsd } from '@/io/psd';
 import {
@@ -23,7 +24,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { computeWorldMatrices, mat3Inverse, mat3Identity } from '@/renderer/transforms';
 import { retriangulate } from '@/mesh/generate';
-import { applyPuppetWarp } from '@/mesh/puppetWarp';
 import { GizmoOverlay } from '@/components/canvas/GizmoOverlay';
 import { saveProject, loadProject } from '@/io/projectFile';
 
@@ -105,6 +105,325 @@ function computeImageBounds(imageData, alphaThreshold = 10) {
 /** Generate a short unique id */
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
+/** Standard Live2D parameter definitions used by the liverig wizard step */
+const LIVE_RIG_PARAMS = [
+  // Face rotation
+  { id: 'ParamAngleX',      name: 'Angle X',        group: 'Face',    min: -30, max:  30, default: 0 },
+  { id: 'ParamAngleY',      name: 'Angle Y',        group: 'Face',    min: -30, max:  30, default: 0 },
+  { id: 'ParamAngleZ',      name: 'Angle Z',        group: 'Face',    min: -30, max:  30, default: 0 },
+  // Eyes
+  { id: 'ParamEyeLOpen',    name: 'Eye L Open',     group: 'Eye',     min:   0, max:   1, default: 1 },
+  { id: 'ParamEyeROpen',    name: 'Eye R Open',     group: 'Eye',     min:   0, max:   1, default: 1 },
+  { id: 'ParamEyeLSmile',   name: 'Eye L Smile',    group: 'Eye',     min:   0, max:   1, default: 0 },
+  { id: 'ParamEyeRSmile',   name: 'Eye R Smile',    group: 'Eye',     min:   0, max:   1, default: 0 },
+  { id: 'ParamEyeBallX',    name: 'Eyeball X',      group: 'Eyeball', min:  -1, max:   1, default: 0 },
+  { id: 'ParamEyeBallY',    name: 'Eyeball Y',      group: 'Eyeball', min:  -1, max:   1, default: 0 },
+  { id: 'ParamEyeBallForm', name: 'Eyeball Form',   group: 'Eyeball', min:  -1, max:   1, default: 0 },
+  { id: 'ParamTear',        name: 'Tear',           group: 'Eye',     min:   0, max:   2, default: 0 },
+  // Brows
+  { id: 'ParamBrowLY',      name: 'Brow L Y',       group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowRY',      name: 'Brow R Y',       group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowLX',      name: 'Brow L X',       group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowRX',      name: 'Brow R X',       group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowLAngle',  name: 'Brow L Angle',   group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowRAngle',  name: 'Brow R Angle',   group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowLForm',   name: 'Brow L Form',    group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowRForm',   name: 'Brow R Form',    group: 'Brow',    min:  -1, max:   1, default: 0 },
+  // Mouth
+  { id: 'ParamMouthForm',   name: 'Mouth Form',     group: 'Mouth',   min:  -1, max:   1, default: 0 },
+  { id: 'ParamMouthOpenY',  name: 'Mouth Open',     group: 'Mouth',   min:   0, max:   1, default: 0 },
+  // Body rotation
+  { id: 'ParamBodyAngleX',  name: 'Body Angle X',   group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamBodyAngleY',  name: 'Body Angle Y',   group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamBodyAngleZ',  name: 'Body Angle Z',   group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamBreath',      name: 'Breath',         group: 'Body',    min:   0, max:   1, default: 0 },
+  // Arms
+  { id: 'ParamArmLA',       name: 'Arm L A',        group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamArmRA',       name: 'Arm R A',        group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamArmLB',       name: 'Arm L B',        group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamArmRB',       name: 'Arm R B',        group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamHandL',       name: 'Hand L',         group: 'Body',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamHandR',       name: 'Hand R',         group: 'Body',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamShoulderY',   name: 'Shoulder Y',     group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamBustX',       name: 'Bust X',         group: 'Body',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBustY',       name: 'Bust Y',         group: 'Body',    min:  -1, max:   1, default: 0 },
+  // Hair
+  { id: 'ParamHairFront',   name: 'Hair Front',     group: 'Hair',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamHairSide',    name: 'Hair Side',      group: 'Hair',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamHairBack',    name: 'Hair Back',      group: 'Hair',    min:  -1, max:   1, default: 0 },
+  // Global
+  { id: 'ParamCheek',       name: 'Cheek',          group: 'Global',  min:   0, max:   1, default: 0 },
+  { id: 'ParamHairFluffy',  name: 'Hair Fluffy',    group: 'Global',  min:   0, max:   1, default: 0 },
+  { id: 'ParamBaseX',       name: 'Base X',         group: 'Global',  min: -10, max:  10, default: 0 },
+  { id: 'ParamBaseY',       name: 'Base Y',         group: 'Global',  min: -10, max:  10, default: 0 },
+];
+
+/**
+ * Warp deformers to auto-create during rig generation.
+ *
+ * Two modes:
+ *   boneRole — wraps ALL children of the group node with that boneRole
+ *   layerTags + insideBoneRole — finds parts by tag within the named group's subtree
+ *
+ * Multiple specs may share the same paramSsId; the parameter receives a binding
+ * for each resulting warp deformer.
+ */
+const WARP_SPECS = [
+  // ── Top-level: wrap all children of a bone group ──────────────────────────
+  { boneRole: 'head',  paramSsId: 'ParamAngleX',    warpName: 'FaceWarp',   warpType: 'face_angle_x' },
+  { boneRole: 'torso', paramSsId: 'ParamBodyAngleX', warpName: 'BodyWarp',   warpType: 'body_angle_x' },
+  { boneRole: 'neck',  paramSsId: 'ParamAngleX',    warpName: 'NeckWarp',   warpType: 'neck_follow'  },
+
+  // ── Nested: find tagged parts within the head subtree ─────────────────────
+  { layerTags: ['irides', 'irides-l', 'eyewhite', 'eyewhite-l', 'eyelash', 'eyelash-l'],
+    insideBoneRole: 'head', paramSsId: 'ParamEyeLOpen',   warpName: 'EyeLWarp',      warpType: 'eye_open'   },
+  { layerTags: ['irides-r', 'eyewhite-r', 'eyelash-r'],
+    insideBoneRole: 'head', paramSsId: 'ParamEyeROpen',   warpName: 'EyeRWarp',      warpType: 'eye_open'   },
+  { layerTags: ['mouth'],
+    insideBoneRole: 'head', paramSsId: 'ParamMouthOpenY', warpName: 'MouthWarp',     warpType: 'mouth_open' },
+  { layerTags: ['eyebrow', 'eyebrow-l'],
+    insideBoneRole: 'head', paramSsId: 'ParamBrowLY',     warpName: 'EyebrowLWarp',  warpType: 'brow_y'     },
+  { layerTags: ['eyebrow-r'],
+    insideBoneRole: 'head', paramSsId: 'ParamBrowRY',     warpName: 'EyebrowRWarp',  warpType: 'brow_y'     },
+  { layerTags: ['front hair'],
+    insideBoneRole: 'head', paramSsId: 'ParamHairFront',  warpName: 'HairFrontWarp', warpType: 'hair_sway'  },
+  { layerTags: ['back hair'],
+    insideBoneRole: 'head', paramSsId: 'ParamHairBack',   warpName: 'HairBackWarp',  warpType: 'hair_sway'  },
+
+  // ── Nested: tagged parts within body/root groups ───────────────────────────
+  { layerTags: ['topwear'],
+    insideBoneRole: 'torso', paramSsId: 'ParamBodyAngleX', warpName: 'TopWearWarp',    warpType: 'body_angle_x' },
+  { layerTags: ['bottomwear'],
+    insideBoneRole: 'root',  paramSsId: 'ParamBodyAngleX', warpName: 'BottomWearWarp', warpType: 'body_angle_x' },
+
+  // ── Structural warp chain: each targets the previous warp ──
+  // Chain: BodyWarp (X) contains BreathWarp (Breath) contains BodyWarpY (Y) contains BodyWarpZ (Z)
+  { chainedUnderWarp: 'BodyWarp', paramSsId: 'ParamBreath',    warpName: 'BreathWarp',  warpType: 'breathing' },
+  { chainedUnderWarp: 'BreathWarp', paramSsId: 'ParamBodyAngleY', warpName: 'BodyWarpY',  warpType: 'body_angle_y' },
+  { chainedUnderWarp: 'BodyWarpY', paramSsId: 'ParamBodyAngleZ', warpName: 'BodyWarpZ',  warpType: 'body_angle_z' },
+];
+
+/**
+ * Build warp-deformer keyframes for a named deformation type.
+ * `scale` (0–1) controls amplitude so strength adjustments re-use this without
+ * re-authoring: scale=1 = 100% strength, scale=0.5 = 50%, etc.
+ * Returns [{time, value:[{x,y},...]}] matching the interpolateMeshVerts format.
+ */
+function buildWarpKeyframes(warpType, gridX, gridY, gridW, gridH, col, row, scale = 1) {
+  function makeGrid(deltaFn) {
+    const arr = [];
+    for (let r = 0; r <= row; r++) {
+      for (let c = 0; c <= col; c++) {
+        const bx = gridX + (col > 0 ? c * gridW / col : 0);
+        const by = gridY + (row > 0 ? r * gridH / row : 0);
+        const d = deltaFn(col > 0 ? c / col : 0, row > 0 ? r / row : 0);
+        arr.push({ x: bx + (d?.dx ?? 0) * scale, y: by + (d?.dy ?? 0) * scale });
+      }
+    }
+    return arr;
+  }
+  const flat = () => makeGrid(() => null);
+
+  if (warpType === 'face_angle_x') {
+    // 2.5D Perspective face turn
+    // time=1000 is turning screen right (+Angle X)
+    const rightTurn = (cn, rn) => {
+      // Parabolic horizontal shift: nose (center) protrudes right, far edge wraps inward
+      // cn=0 (near): dx=0.02, cn=0.5 (center): dx=0.15, cn=1.0 (far): dx=-0.05
+      const dx = (-0.66 * cn * cn + 0.59 * cn + 0.02) * gridW;
+      
+      // Perspective Z-scaling: near side gets slightly taller, far side gets shorter
+      const zScale = 1.0 + (0.5 - cn) * 0.1;
+      const dy = (rn - 0.5) * (zScale - 1) * gridH;
+      
+      return { dx, dy };
+    };
+
+    const leftTurn = (cn, rn) => {
+      // Mirror of right turn
+      const mirroredCn = 1 - cn;
+      const d = rightTurn(mirroredCn, rn);
+      return { dx: -d.dx, dy: d.dy };
+    };
+
+    return [
+      { time:    0, value: makeGrid(leftTurn) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(rightTurn) },
+    ];
+  }
+
+  if (warpType === 'body_angle_x') {
+    // 2.5D Perspective body turn
+    // time=1000 is turning screen right
+    const rightTurnBody = (cn, rn) => {
+      // Horizontal shear combined with perspective
+      // Top moves more than bottom. Left shoulder (near) moves right, right shoulder (far) wraps inward
+      const topDxRatio = -0.4 * cn * cn + 0.32 * cn + 0.10;
+      const dx = topDxRatio * (1 - rn) * gridW;
+
+      // Perspective Z-scaling: near shoulder gets larger/lower, far shoulder lifts/shrinks
+      const zScale = 1.0 + (0.5 - cn) * 0.15;
+      const dy = (rn - 0.5) * (zScale - 1) * gridH;
+
+      return { dx, dy };
+    };
+
+    const leftTurnBody = (cn, rn) => {
+      const mirroredCn = 1 - cn;
+      const d = rightTurnBody(mirroredCn, rn);
+      return { dx: -d.dx, dy: d.dy };
+    };
+
+    return [
+      { time:    0, value: makeGrid(leftTurnBody) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(rightTurnBody) },
+    ];
+  }
+
+  if (warpType === 'neck_follow') {
+    // Neck shears to follow the head turn at reduced amplitude
+    const rightTurn = (cn, rn) => {
+      const dx = (-0.66 * cn * cn + 0.59 * cn + 0.02) * gridW * 0.35;
+      const zScale = 1.0 + (0.5 - cn) * 0.06;
+      const dy = (rn - 0.5) * (zScale - 1) * gridH;
+      return { dx, dy };
+    };
+    const leftTurn = (cn, rn) => { const d = rightTurn(1 - cn, rn); return { dx: -d.dx, dy: d.dy }; };
+    return [
+      { time:    0, value: makeGrid(leftTurn) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(rightTurn) },
+    ];
+  }
+
+  if (warpType === 'face_angle_y') {
+    // Head pitch — looking up (time=1000) / looking down (time=0)
+    const lookUp = (cn, rn) => ({
+      dy: -(0.5 - rn) * 0.28 * gridH,
+      dx: (cn - 0.5) * rn * 0.08 * gridW,
+    });
+    const lookDown = (cn, rn) => ({
+      dy:  (0.5 - rn) * 0.28 * gridH,
+      dx: (cn - 0.5) * (1 - rn) * 0.08 * gridW,
+    });
+    return [
+      { time:    0, value: makeGrid(lookDown) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(lookUp) },
+    ];
+  }
+
+  if (warpType === 'body_angle_y') {
+    // Body pitch — leaning back (time=0) / leaning forward (time=1000)
+    const leanBack    = (cn, rn) => ({ dy:  (0.5 - rn) * 0.20 * gridH, dx: (cn - 0.5) * (1 - rn) * 0.06 * gridW });
+    const leanForward = (cn, rn) => ({ dy: -(0.5 - rn) * 0.20 * gridH, dx: (cn - 0.5) * rn        * 0.06 * gridW });
+    return [
+      { time:    0, value: makeGrid(leanBack) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(leanForward) },
+    ];
+  }
+
+  if (warpType === 'body_angle_z') {
+    // Body roll — tilting left (time=0) / tilting right (time=1000)
+    // Spine acts as rotation axis; shoulders rotate around spine, hips rotate less
+    const rightTilt = (cn, rn) => {
+      // Body bowing: center/spine shifts WITH tilt, edges shift opposite
+      const bowFactor = 1.5 * Math.sin(Math.PI * cn) - 0.5;
+      const dx = bowFactor * 0.035 * gridW * rn;
+      // Perspective: lean side rises, far side drops (3D depth)
+      const dy = -(cn - 0.5) * 0.025 * gridH * rn;
+      return { dx, dy };
+    };
+    const leftTilt = (cn, rn) => {
+      const d = rightTilt(1 - cn, rn);
+      return { dx: -d.dx, dy: d.dy };
+    };
+    return [
+      { time:    0, value: makeGrid(leftTilt) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(rightTilt) },
+    ];
+  }
+
+  if (warpType === 'eye_open') {
+    // Eyelid close: top row squishes toward center row
+    // time=0 closed (param=0), time=1000 open (param=1, default)
+    const closed = (_cn, rn) => ({ dx: 0, dy: (0.5 - rn) * 0.65 * gridH });
+    return [
+      { time:    0, value: makeGrid(closed) },
+      { time: 1000, value: flat() },
+    ];
+  }
+
+  if (warpType === 'mouth_open') {
+    // Jaw drop: top row moves up, bottom row moves down
+    // time=0 closed (param=0, flat), time=1000 open (param=1)
+    const open = (_cn, rn) => ({ dx: 0, dy: (rn - 0.5) * 0.55 * gridH });
+    return [
+      { time:    0, value: flat() },
+      { time: 1000, value: makeGrid(open) },
+    ];
+  }
+
+  if (warpType === 'brow_y') {
+    // Uniform vertical translation: down (time=0, param=-1) → up (time=1000, param=1)
+    const shift = 0.25 * gridH;
+    return [
+      { time:    0, value: makeGrid(() => ({ dx: 0, dy:  shift })) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(() => ({ dx: 0, dy: -shift })) },
+    ];
+  }
+
+  if (warpType === 'hair_sway') {
+    // Tip-biased horizontal sway (rn=0 is root/top, rn=1 is tip/bottom)
+    const rightSway = (_cn, rn) => ({ dx: rn * rn * 0.20 * gridW, dy: 0 });
+    const leftSway  = (_cn, rn) => ({ dx: -rn * rn * 0.20 * gridW, dy: 0 });
+    return [
+      { time:    0, value: makeGrid(leftSway) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(rightSway) },
+    ];
+  }
+
+  if (warpType === 'breathing') {
+    // Chest compression on inhale (parameter 0=exhale/flat, 1=inhale/compressed)
+    // Edge columns and top/bottom rows pinned; chest rows compress inward
+    const inhale = (cn, rn) => {
+      // Edge columns stay pinned
+      if (cn <= 0.05 || cn >= 0.95) return { dx: 0, dy: 0 };
+      // Top edge and bottom 2 rows: no change
+      if (rn <= 0.1 || rn >= 0.80) return { dx: 0, dy: 0 };
+
+      // Chest rows compress inward with row-specific amplitudes (matching Live2D export)
+      let dy = 0;
+      const rowInChest = (rn - 0.1) / 0.70;
+      if (rowInChest < 0.25) {        // Upper chest
+        dy = -0.10 * gridH;
+      } else if (rowInChest < 0.50) { // Peak compression
+        dy = -0.12 * gridH;
+      } else if (rowInChest < 0.75) { // Lower chest
+        dy = -0.06 * gridH;
+      }
+
+      // Horizontal squeeze: center columns move inward
+      const cx = (cn - 0.5) * 2;
+      const dx = -cx * 0.06 * gridW;
+
+      return { dx, dy };
+    };
+    return [
+      { time:    0, value: flat() },
+      { time: 1000, value: makeGrid(inhale) },
+    ];
+  }
+
+  return [{ time: 0, value: flat() }, { time: 1000, value: flat() }];
+}
+
 /** Strip extension from a filename */
 function basename(filename) {
   return filename.replace(/\.[^.]+$/, '');
@@ -162,6 +481,7 @@ export default function CanvasViewport({
   const project = useProjectStore(s => s.project);
   const versionControl = useProjectStore(s => s.versionControl);
   const updateProject = useProjectStore(s => s.updateProject);
+  const updateParameter = useProjectStore(s => s.updateParameter);
   const resetProject = useProjectStore(s => s.resetProject);
   const editorState = useEditorStore();
   const setBrush = useEditorStore(s => s.setBrush);
@@ -172,6 +492,10 @@ export default function CanvasViewport({
   const animStore = useAnimationStore();
   const animRef = useRef(animStore);
   animRef.current = animStore;
+
+  const paramStore = useParameterStore();
+  const paramRef = useRef(paramStore);
+  paramRef.current = paramStore;
 
   // Stable refs for imperative callbacks
   const editorRef = useRef(editorState);
@@ -185,6 +509,8 @@ export default function CanvasViewport({
   isDarkRef.current = isDark;
 
   useEffect(() => { isDirtyRef.current = true; }, [project, isDark]);
+  // Redraw whenever parameter sliders change
+  useEffect(() => { isDirtyRef.current = true; }, [paramStore.values]);
   
   /* ── GPU Sync: Ensure nodes in store have matching WebGL resources ── */
   useEffect(() => {
@@ -319,6 +645,29 @@ export default function CanvasViewport({
           }
         }
 
+        // Parameter-driven overrides: apply where animation keyframes haven't already set a value.
+        // Works in both staging and animation mode — parameters are always-on interactive sliders.
+        {
+          const proj = projectRef.current;
+          if (proj.parameters?.length > 0) {
+            const paramOverrides = computeParameterDrivenOverrides(
+              proj.animations,
+              proj.parameters,
+              paramRef.current.values,
+            );
+            if (paramOverrides.size > 0) {
+              if (!poseOverrides) poseOverrides = new Map();
+              for (const [nodeId, ov] of paramOverrides) {
+                const existing = poseOverrides.get(nodeId) ?? {};
+                for (const [prop, val] of Object.entries(ov)) {
+                  if (!(prop in existing)) existing[prop] = val;
+                }
+                poseOverrides.set(nodeId, existing);
+              }
+            }
+          }
+        }
+
         // Always apply draftPose mesh_verts for GPU upload — this handles elbow/knee skinning
         // in staging mode where poseOverrides would otherwise be null.
         if (anim.draftPose.size > 0) {
@@ -366,32 +715,59 @@ export default function CanvasViewport({
           if (!existing.mesh_verts) poseOverrides.set(node.id, { ...existing, mesh_verts: blendedVerts });
         }
 
-        // Apply puppet warp — deform mesh using MLS-rigid based on pin positions
-        for (const node of projectRef.current.nodes) {
-          if (node.type !== 'part' || !node.mesh || !node.puppetWarp?.enabled || !node.puppetWarp.pins.length) continue;
+        // Apply warp deformer nodes: bilinear grid deformation on child meshes.
+        // Runs after blend shapes so the warp sees the fully-blended vertex positions.
+        for (const wd of projectRef.current.nodes) {
+          if (wd.type !== 'warpDeformer') continue;
+          const wdOv = poseOverrides?.get(wd.id);
+          const gridPts = wdOv?.mesh_verts;
+          if (!gridPts?.length) continue; // no active grid deformation
 
-          const draft = anim.draftPose.get(node.id);
-          const kfOv = poseOverrides?.get(node.id);
+          const { col = 2, row = 2, gridX = 0, gridY = 0, gridW = 1, gridH = 1 } = wd;
+          const safeW = gridW || 1, safeH = gridH || 1;
 
-          // Effective pins: draft > keyframe > base
-          // Keyframe values only store {id, x, y} — merge restX/restY from base pins
-          const basePins = node.puppetWarp.pins;
-          const rawPins = draft?.puppet_pins ?? kfOv?.puppet_pins ?? null;
-          const effectivePins = rawPins
-            ? rawPins.map(p => {
-                const base = basePins.find(b => b.id === p.id);
-                return { restX: base?.restX ?? p.x, restY: base?.restY ?? p.y, x: p.x, y: p.y };
-              })
-            : basePins;
-          if (!effectivePins.length) continue;
-
-          // Input vertices: already blended (from blend shapes above) or base mesh
-          const inputVerts = (kfOv?.mesh_verts ?? node.mesh.vertices).map(v => ({ x: v.x ?? v.restX, y: v.y ?? v.restY }));
-          const warpedVerts = applyPuppetWarp(inputVerts, effectivePins);
-
-          if (!poseOverrides) poseOverrides = new Map();
-          const existing = poseOverrides.get(node.id) ?? {};
-          poseOverrides.set(node.id, { ...existing, mesh_verts: warpedVerts });
+          // Recursively collect all descendant mesh parts, traversing through groups
+          // AND nested warpDeformers so parent warps always reach grandchild parts.
+          const collectDescendants = (parentId) => {
+            const result = [];
+            for (const n of projectRef.current.nodes) {
+              if (n.parent !== parentId) continue;
+              if (n.type === 'part' && n.mesh) result.push(n);
+              else if ((n.type === 'group' || n.type === 'warpDeformer') && n.visible !== false)
+                result.push(...collectDescendants(n.id));
+            }
+            return result;
+          };
+          const childParts = collectDescendants(wd.id);
+          for (const child of childParts) {
+            // Use REST vertices for UV parameterization so that accumulated deltas
+            // from parent warps don't corrupt the UV → grid mapping.
+            const restVerts = child.mesh.vertices;
+            const curVerts  = poseOverrides?.get(child.id)?.mesh_verts ?? restVerts;
+            const warped = restVerts.map((rv, vi) => {
+              const px = rv.x ?? rv.restX, py = rv.y ?? rv.restY;
+              const s  = Math.max(0, Math.min(1, (px - gridX) / safeW));
+              const t  = Math.max(0, Math.min(1, (py - gridY) / safeH));
+              const ci = Math.min(Math.floor(s * col), col - 1);
+              const ri = Math.min(Math.floor(t * row), row - 1);
+              const u  = s * col - ci;
+              const vv = t * row - ri;
+              const p00 = gridPts[ri * (col + 1) + ci];
+              const p10 = gridPts[ri * (col + 1) + ci + 1];
+              const p01 = gridPts[(ri + 1) * (col + 1) + ci];
+              const p11 = gridPts[(ri + 1) * (col + 1) + ci + 1];
+              if (!p00 || !p10 || !p01 || !p11) return { x: curVerts[vi].x ?? px, y: curVerts[vi].y ?? py };
+              // Bilinear target position driven by this warp's grid
+              const tx = (1-u)*(1-vv)*p00.x + u*(1-vv)*p10.x + (1-u)*vv*p01.x + u*vv*p11.x;
+              const ty = (1-u)*(1-vv)*p00.y + u*(1-vv)*p10.y + (1-u)*vv*p01.y + u*vv*p11.y;
+              // Accumulate delta on top of any previously-applied warp offsets
+              const cv = curVerts[vi];
+              return { x: (cv.x ?? px) + (tx - px), y: (cv.y ?? py) + (ty - py) };
+            });
+            if (!poseOverrides) poseOverrides = new Map();
+            const ex = poseOverrides.get(child.id) ?? {};
+            poseOverrides.set(child.id, { ...ex, mesh_verts: warped });
+          }
         }
 
         // Upload mesh vertex overrides BEFORE drawing so the GPU buffers are
@@ -594,31 +970,6 @@ export default function CanvasViewport({
             }
           }
 
-          // ── puppet_pins keyframe (puppet warp deformation) ──────────────────
-          if (node.type === 'part' && node.puppetWarp?.enabled) {
-            const hasPinDraft = draft?.puppet_pins !== undefined;
-            let pinTrack = animation.tracks.find(t => t.nodeId === nodeId && t.property === 'puppet_pins');
-
-            if (hasPinDraft || pinTrack) {
-              const pinValue = draft?.puppet_pins
-                ?? kfValues?.puppet_pins
-                ?? node.puppetWarp.pins.map(p => ({ id: p.id, x: p.x, y: p.y }));
-
-              const isNewPinTrack = !pinTrack;
-              if (!pinTrack) {
-                pinTrack = { nodeId, property: 'puppet_pins', keyframes: [] };
-                animation.tracks.push(pinTrack);
-
-                // Auto-insert rest-pose pin keyframe at startFrame
-                if (currentTimeMs > startMs) {
-                  const restPins = node.puppetWarp.pins.map(p => ({ id: p.id, x: p.restX, y: p.restY }));
-                  upsertKeyframe(pinTrack.keyframes, startMs, restPins, 'linear');
-                }
-              }
-
-              upsertKeyframe(pinTrack.keyframes, currentTimeMs, pinValue, 'linear');
-            }
-          }
         }
       });
 
@@ -942,8 +1293,27 @@ export default function CanvasViewport({
   }, [wizardPsd, finalizePsdImport]);
 
   /* ── Wizard: enter reorder stage (finalize without rig) ────────────────── */
-  const handleWizardReorder = useCallback(() => {
-    const { psdW, psdH, layers, partIds } = wizardPsd;
+  const handleWizardReorder = useCallback((splits) => {
+    let { psdW, psdH, layers, partIds } = wizardPsd;
+
+    if (splits && splits.length > 0) {
+      const newLayers = [...layers];
+      const newPartIds = [...partIds];
+      const sortedSplits = [...splits].sort((a, b) => b.mergedIdx - a.mergedIdx);
+
+      for (const { mergedIdx, rightLayer, leftLayer } of sortedSplits) {
+        const replacements = [];
+        if (rightLayer) replacements.push({ layer: rightLayer, partId: uid() });
+        if (leftLayer) replacements.push({ layer: leftLayer, partId: uid() });
+
+        newLayers.splice(mergedIdx, 1, ...replacements.map(r => r.layer));
+        newPartIds.splice(mergedIdx, 1, ...replacements.map(r => r.partId));
+      }
+      layers = newLayers;
+      partIds = newPartIds;
+      setWizardPsd({ psdW, psdH, layers, partIds });
+    }
+
     if (!preImportSnapshotRef.current) {
       preImportSnapshotRef.current = JSON.stringify(useProjectStore.getState().project);
     }
@@ -1018,8 +1388,26 @@ export default function CanvasViewport({
   }, [wizardPsd, updateProject]);
 
   /* ── Wizard: skip rigging (called by PsdImportWizard) ──────────────────── */
-  const handleWizardSkip = useCallback((meshAllParts) => {
-    const { psdW, psdH, layers, partIds } = wizardPsd;
+  const handleWizardSkip = useCallback((meshAllParts, splits) => {
+    let { psdW, psdH, layers, partIds } = wizardPsd;
+
+    if (splits && splits.length > 0) {
+      const newLayers = [...layers];
+      const newPartIds = [...partIds];
+      const sortedSplits = [...splits].sort((a, b) => b.mergedIdx - a.mergedIdx);
+
+      for (const { mergedIdx, rightLayer, leftLayer } of sortedSplits) {
+        const replacements = [];
+        if (rightLayer) replacements.push({ layer: rightLayer, partId: uid() });
+        if (leftLayer) replacements.push({ layer: leftLayer, partId: uid() });
+
+        newLayers.splice(mergedIdx, 1, ...replacements.map(r => r.layer));
+        newPartIds.splice(mergedIdx, 1, ...replacements.map(r => r.partId));
+      }
+      layers = newLayers;
+      partIds = newPartIds;
+    }
+
     finalizePsdImport(psdW, psdH, layers, partIds, [], null);
     if (meshAllParts) {
       // Auto-mesh will happen asynchronously as textures are uploaded
@@ -1030,12 +1418,331 @@ export default function CanvasViewport({
     setWizardStep(null);
   }, [wizardPsd, finalizePsdImport, autoMeshAllParts]);
 
-  /* ── Wizard: complete (called by PsdImportWizard adjust step) ──────────── */
-  const handleWizardComplete = useCallback((meshAllParts) => {
-    if (meshAllParts ?? meshAllPartsRef.current) {
-      // Auto-mesh all unmeshed parts with smart sizing
-      autoMeshAllParts();
+  /* ── Wizard: auto-generate warp deformers + Live2D parameters ──────────── */
+  const autoGenerateWarpDeformers = useCallback(() => {
+    updateProject((proj) => {
+      // Ensure a "Parameters" animation clip exists
+      let paramAnim = proj.animations.find(a => a.name === 'Parameters');
+      if (!paramAnim) {
+        const animId = uid();
+        proj.animations.push({ id: animId, name: 'Parameters', duration: 2000, fps: 24, tracks: [], audioTracks: [] });
+        paramAnim = proj.animations[proj.animations.length - 1];
+      }
+
+      // paramId → warpId[] (array; multiple warp deformers may share one parameter)
+      const warpNodeIds = {};
+
+      // Collect imageBounds from ALL descendants (through groups and warpDeformers)
+      const collectBounds = (proj, parentId, state) => {
+        for (const n of proj.nodes) {
+          if (n.parent !== parentId) continue;
+          if (n.imageBounds) {
+            state.minX = Math.min(state.minX, n.imageBounds.minX);
+            state.minY = Math.min(state.minY, n.imageBounds.minY);
+            state.maxX = Math.max(state.maxX, n.imageBounds.maxX);
+            state.maxY = Math.max(state.maxY, n.imageBounds.maxY);
+          }
+          if (n.type === 'group' || n.type === 'warpDeformer') collectBounds(proj, n.id, state);
+        }
+      };
+
+      // Find parts matching layerTags anywhere within a subtree (skips into groups/warps)
+      const collectTaggedParts = (parentId, tagSet, result = []) => {
+        for (const n of proj.nodes) {
+          if (n.parent !== parentId) continue;
+          const tag = matchTag(n.name);
+          if (tag && tagSet.has(tag)) {
+            result.push(n);
+          } else if (n.type === 'group' || n.type === 'warpDeformer') {
+            collectTaggedParts(n.id, tagSet, result);
+          }
+        }
+        return result;
+      };
+
+      // For a given boneRole group, return the direct-child warp deformer if one
+      // was already created (so nested specs attach inside it, not alongside it).
+      const findWarpChildOf = (boneRole) => {
+        const group = proj.nodes.find(n => n.boneRole === boneRole);
+        if (!group) return null;
+        return proj.nodes.find(n => n.parent === group.id && n.type === 'warpDeformer') ?? group;
+      };
+
+      const createWarp = (spec, parentNode, targetChildren) => {
+        if (targetChildren.length === 0) return;
+        const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+        for (const n of targetChildren) {
+          if (n.imageBounds) {
+            bounds.minX = Math.min(bounds.minX, n.imageBounds.minX);
+            bounds.minY = Math.min(bounds.minY, n.imageBounds.minY);
+            bounds.maxX = Math.max(bounds.maxX, n.imageBounds.maxX);
+            bounds.maxY = Math.max(bounds.maxY, n.imageBounds.maxY);
+          }
+          // Also recurse for groups/warpDeformers to capture child bounds
+          if (n.type === 'group' || n.type === 'warpDeformer') {
+            collectBounds(proj, n.id, bounds);
+          }
+        }
+        if (bounds.minX === Infinity) return; // no bounds — skip
+
+        const PAD = 12;
+        const gridX = bounds.minX - PAD, gridY = bounds.minY - PAD;
+        const gridW = (bounds.maxX - bounds.minX) + 2 * PAD;
+        const gridH = (bounds.maxY - bounds.minY) + 2 * PAD;
+        const col = 2, row = 2;
+        const warpId = uid();
+
+        proj.nodes.push({
+          id: warpId, type: 'warpDeformer', name: spec.warpName,
+          parent: parentNode.id, transform: DEFAULT_TRANSFORM(),
+          visible: true, opacity: 1,
+          col, row, gridX, gridY, gridW, gridH,
+          parameterId: spec.paramSsId,
+          warpType: spec.warpType,
+        });
+
+        for (const child of targetChildren) child.parent = warpId;
+
+        paramAnim.tracks.push({
+          nodeId: warpId, property: 'mesh_verts',
+          keyframes: buildWarpKeyframes(spec.warpType, gridX, gridY, gridW, gridH, col, row, 1),
+        });
+
+        if (!warpNodeIds[spec.paramSsId]) warpNodeIds[spec.paramSsId] = [];
+        warpNodeIds[spec.paramSsId].push(warpId);
+      };
+
+      for (const spec of WARP_SPECS) {
+        if (spec.boneRole) {
+          // ── boneRole mode: wrap all direct children of this bone group ──
+          const group = proj.nodes.find(n => n.type === 'group' && n.boneRole === spec.boneRole);
+          if (!group) continue;
+          const children = proj.nodes.filter(n => n.parent === group.id);
+          if (children.length === 0) continue;
+
+          // Use full-subtree bounds so BodyWarp encompasses head sub-group area too
+          const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+          collectBounds(proj, group.id, bounds);
+          if (bounds.minX === Infinity) { bounds.minX = 0; bounds.minY = 0; bounds.maxX = proj.canvas.width; bounds.maxY = proj.canvas.height; }
+
+          const PAD = 20;
+          const gridX = bounds.minX - PAD, gridY = bounds.minY - PAD;
+          const gridW = (bounds.maxX - bounds.minX) + 2 * PAD;
+          const gridH = (bounds.maxY - bounds.minY) + 2 * PAD;
+          const col = 5, row = 5;
+          const warpId = uid();
+
+          proj.nodes.push({
+            id: warpId, type: 'warpDeformer', name: spec.warpName,
+            parent: group.id, transform: DEFAULT_TRANSFORM(),
+            visible: true, opacity: 1,
+            col, row, gridX, gridY, gridW, gridH,
+            parameterId: spec.paramSsId,
+            warpType: spec.warpType,
+          });
+
+          for (const child of children) child.parent = warpId;
+
+          paramAnim.tracks.push({
+            nodeId: warpId, property: 'mesh_verts',
+            keyframes: buildWarpKeyframes(spec.warpType, gridX, gridY, gridW, gridH, col, row, 1),
+          });
+
+          if (!warpNodeIds[spec.paramSsId]) warpNodeIds[spec.paramSsId] = [];
+          warpNodeIds[spec.paramSsId].push(warpId);
+
+        } else if (spec.layerTags) {
+          // ── tag mode: find tagged parts within a bone group's subtree ──
+          const searchRoot = findWarpChildOf(spec.insideBoneRole);
+          if (!searchRoot) continue;
+
+          const tagSet = new Set(spec.layerTags);
+          const targets = collectTaggedParts(searchRoot.id, tagSet);
+          createWarp(spec, searchRoot, targets);
+        } else if (spec.chainedUnderWarp) {
+          // ── chain mode: create warp under another warp (structural chain) ──
+          const parentWarp = proj.nodes.find(n => n.type === 'warpDeformer' && n.name === spec.chainedUnderWarp);
+          if (!parentWarp) continue;
+
+          // Get all direct children of parent warp to compute bounds and reparent
+          const children = proj.nodes.filter(n => n.parent === parentWarp.id);
+
+          // Get all descendants of parent warp to compute bounds
+          const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+          collectBounds(proj, parentWarp.id, bounds);
+          if (bounds.minX === Infinity) {
+            bounds.minX = parentWarp.gridX;
+            bounds.minY = parentWarp.gridY;
+            bounds.maxX = parentWarp.gridX + parentWarp.gridW;
+            bounds.maxY = parentWarp.gridY + parentWarp.gridH;
+          }
+
+          const PAD = 8;
+          const gridX = bounds.minX - PAD, gridY = bounds.minY - PAD;
+          const gridW = (bounds.maxX - bounds.minX) + 2 * PAD;
+          const gridH = (bounds.maxY - bounds.minY) + 2 * PAD;
+          const col = 5, row = 5;
+          const warpId = uid();
+
+          proj.nodes.push({
+            id: warpId, type: 'warpDeformer', name: spec.warpName,
+            parent: parentWarp.id, transform: DEFAULT_TRANSFORM(),
+            visible: true, opacity: 1,
+            col, row, gridX, gridY, gridW, gridH,
+            parameterId: spec.paramSsId,
+            warpType: spec.warpType,
+          });
+
+          // Reparent all children of parent warp to this new warp (insert into chain)
+          for (const child of children) {
+            child.parent = warpId;
+          }
+
+          paramAnim.tracks.push({
+            nodeId: warpId, property: 'mesh_verts',
+            keyframes: buildWarpKeyframes(spec.warpType, gridX, gridY, gridW, gridH, col, row, 1),
+          });
+
+          if (!warpNodeIds[spec.paramSsId]) warpNodeIds[spec.paramSsId] = [];
+          warpNodeIds[spec.paramSsId].push(warpId);
+        }
+      }
+
+      // Post-process: reparent BottomWearWarp into the warp chain so it's affected by all structural warps
+      const bodyWarpZ = proj.nodes.find(n => n.type === 'warpDeformer' && n.name === 'BodyWarpZ');
+      const bottomWearWarp = proj.nodes.find(n => n.type === 'warpDeformer' && n.name === 'BottomWearWarp');
+      if (bodyWarpZ && bottomWearWarp && bottomWearWarp.parent !== bodyWarpZ.id) {
+        bottomWearWarp.parent = bodyWarpZ.id;
+      }
+
+      // Create all standard Live2D parameters; wire bindings for warp-linked ones
+      for (const spec of LIVE_RIG_PARAMS) {
+        const warpIds = warpNodeIds[spec.id] ?? [];
+        const bindings = warpIds.map(wid => ({ animationId: paramAnim.id, nodeId: wid, property: 'mesh_verts' }));
+        proj.parameters.push({
+          id: spec.id, name: spec.name,
+          min: spec.min, max: spec.max, default: spec.default,
+          bindings,
+        });
+      }
+    });
+  }, [updateProject]);
+
+  /* ── Wizard: adjust warp strength (slider drag) ─────────────────────────── */
+  const handleWarpStrength = useCallback((paramId, strength) => {
+    const baseDef = LIVE_RIG_PARAMS.find(p => p.id === paramId);
+    if (!baseDef) return;
+    const s = strength / 100;
+    const newMin = baseDef.min === 0 ? 0 : baseDef.min * s;
+    const newMax = baseDef.max * s;
+
+    updateParameter(paramId, { min: newMin, max: newMax });
+
+    const hasSpec = WARP_SPECS.some(ws => ws.paramSsId === paramId);
+    if (hasSpec) {
+      updateProject(proj => {
+        const paramAnim = proj.animations.find(a => a.name === 'Parameters');
+        if (!paramAnim) return;
+        const warpNodes = proj.nodes.filter(n => n.type === 'warpDeformer' && n.parameterId === paramId);
+        for (const warpNode of warpNodes) {
+          const track = paramAnim.tracks.find(t => t.nodeId === warpNode.id && t.property === 'mesh_verts');
+          if (!track) continue;
+          const warpType = warpNode.warpType ?? WARP_SPECS.find(ws => ws.paramSsId === paramId)?.warpType;
+          if (!warpType) continue;
+          track.keyframes = buildWarpKeyframes(
+            warpType, warpNode.gridX, warpNode.gridY, warpNode.gridW, warpNode.gridH,
+            warpNode.col, warpNode.row, s,
+          );
+        }
+      }, { skipHistory: true });
     }
+
+    useParameterStore.getState().setParameterValue(paramId, newMax);
+  }, [updateParameter, updateProject]);
+
+  /* ── Wizard: create Idle animation clip with bone rotation + blink tracks ── */
+  const createIdleAnimation = useCallback(() => {
+    updateProject((proj) => {
+      if (proj.animations.find(a => a.name === 'Idle')) return;
+
+      const tracks = [];
+      const torso = proj.nodes.find(n => n.type === 'group' && n.boneRole === 'torso');
+      const head  = proj.nodes.find(n => n.type === 'group' && n.boneRole === 'head');
+
+      if (torso) {
+        tracks.push({
+          nodeId: torso.id, property: 'rotation',
+          keyframes: [
+            { time:    0, value: 0 },
+            { time: 1000, value: -3 },
+            { time: 2000, value: 0 },
+            { time: 3000, value: 3 },
+            { time: 4000, value: 0 },
+          ],
+        });
+      }
+      if (head) {
+        tracks.push({
+          nodeId: head.id, property: 'rotation',
+          keyframes: [
+            { time:    0, value:  0 },
+            { time: 1000, value:  1 },
+            { time: 2000, value:  0 },
+            { time: 3000, value: -1 },
+            { time: 4000, value:  0 },
+          ],
+        });
+      }
+
+      // Opacity blink on any part whose name starts with "eyelash" or "eyelid"
+      for (const node of proj.nodes) {
+        if (node.type !== 'part') continue;
+        if (!/^eyelash|^eyelid/i.test(node.name)) continue;
+        tracks.push({
+          nodeId: node.id, property: 'opacity',
+          keyframes: [
+            { time:    0, value: 1 },
+            { time: 3400, value: 1 },
+            { time: 3550, value: 0 },
+            { time: 3700, value: 1 },
+            { time: 4000, value: 1 },
+          ],
+        });
+      }
+
+      proj.animations.push({
+        id: uid(), name: 'Idle', duration: 4000, fps: 24,
+        tracks, audioTracks: [],
+      });
+    });
+  }, [updateProject]);
+
+  /* ── Wizard: enter liverig step (auto-generate then show param panel) ───── */
+  const handleWizardLiveRig = useCallback((meshAllParts) => {
+    meshAllPartsRef.current = meshAllParts;
+    autoGenerateWarpDeformers();
+    createIdleAnimation();
+    // Generate meshes now so warp deformers have geometry to deform during the preview
+    if (meshAllParts) autoMeshAllParts();
+    useEditorStore.getState().setSkeletonEditMode(false);
+    setWizardStep('liverig');
+    // Start idle playback after updateProject flushes (next tick)
+    setTimeout(() => {
+      const idleClip = useProjectStore.getState().project.animations.find(a => a.name === 'Idle');
+      if (idleClip) {
+        useAnimationStore.getState().switchAnimation(idleClip);
+        useAnimationStore.getState().play();
+      }
+    }, 0);
+  }, [autoGenerateWarpDeformers, createIdleAnimation, autoMeshAllParts]);
+
+  /* ── Wizard: complete (called by PsdImportWizard adjust/liverig step) ───── */
+  const handleWizardComplete = useCallback((meshAllParts) => {
+    useAnimationStore.getState().pause();
+    useParameterStore.getState().clearAll();
+    // autoMeshAllParts only meshes parts that don't yet have a mesh, so calling it
+    // here is safe even if liverig already triggered it (idempotent on already-meshed parts)
+    if (meshAllParts ?? meshAllPartsRef.current) autoMeshAllParts();
     setWizardStep(null);
     setWizardPsd(null);
     useEditorStore.getState().setSkeletonEditMode(false);
@@ -1054,27 +1761,6 @@ export default function CanvasViewport({
   }, []);
 
 
-  /* ── Wizard: split merged parts into left/right ────────────── */
-  const handleWizardSplitParts = useCallback((splits) => {
-    setWizardPsd(prev => {
-      if (!prev) return prev;
-      const newLayers = [...prev.layers];
-      const newPartIds = [...prev.partIds];
-
-      const sortedSplits = [...splits].sort((a, b) => b.mergedIdx - a.mergedIdx);
-
-      for (const { mergedIdx, rightLayer, leftLayer } of sortedSplits) {
-        const replacements = [];
-        if (rightLayer) replacements.push({ layer: rightLayer, partId: uid() });
-        if (leftLayer) replacements.push({ layer: leftLayer, partId: uid() });
-        
-        newLayers.splice(mergedIdx, 1, ...replacements.map(r => r.layer));
-        newPartIds.splice(mergedIdx, 1, ...replacements.map(r => r.partId));
-      }
-
-      return { ...prev, layers: newLayers, partIds: newPartIds };
-    });
-  }, []);
 
   const handleWizardUpdatePsd = useCallback((updates) => {
     setWizardPsd(prev => (prev ? { ...prev, ...updates } : prev));
@@ -1816,7 +2502,7 @@ export default function CanvasViewport({
       if (anim) {
         poseOverrides = computePoseOverrides(anim, timeMs, loopKeyframes, anim.duration ?? 0);
 
-        // Compute mesh deformations (blend shapes + puppet warp) for export frame
+        // Compute mesh deformations (blend shapes) for export frame
         for (const node of exportProject.nodes) {
           if (node.type !== 'part' || !node.mesh) continue;
 
@@ -1837,24 +2523,6 @@ export default function CanvasViewport({
                 }
                 return { x: bx, y: by };
               });
-            }
-          }
-
-          // 2. Puppet warp (applied on top of blended vertices if they exist)
-          if (node.puppetWarp?.enabled && node.puppetWarp.pins.length) {
-            const kfOv = poseOverrides.get(node.id);
-            const basePins = node.puppetWarp.pins;
-            const rawPins = kfOv?.puppet_pins ?? null;
-            const effectivePins = rawPins
-              ? rawPins.map(p => {
-                const base = basePins.find(b => b.id === p.id);
-                return { restX: base?.restX ?? p.x, restY: base?.restY ?? p.y, x: p.x, y: p.y };
-              })
-              : basePins;
-
-            if (effectivePins.length) {
-              const inputVerts = (currentMeshVerts ?? node.mesh.vertices).map(v => ({ x: v.x ?? v.restX, y: v.y ?? v.restY }));
-              currentMeshVerts = applyPuppetWarp(inputVerts, effectivePins);
             }
           }
 
@@ -2049,10 +2717,12 @@ export default function CanvasViewport({
           onCancel={handleWizardCancel}
           onComplete={handleWizardComplete}
           onBack={handleWizardBack}
-          onSplitParts={handleWizardSplitParts}
           onUpdatePsd={handleWizardUpdatePsd}
           onReorder={handleWizardReorder}
           onApplyRig={handleWizardApplyRig}
+          onLiveRig={handleWizardLiveRig}
+          liveRigParams={project.parameters}
+          onWarpStrength={handleWarpStrength}
         />
       )}
 

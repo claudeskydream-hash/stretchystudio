@@ -114,7 +114,7 @@ export function interpolateTrack(keyframes, timeMs, loopKeyframes = false, endMs
  * Interpolate an array of {x,y} vertex positions between two keyframes.
  * Both keyframe values must have the same vertex count.
  */
-function interpolateMeshVerts(keyframes, timeMs, loopKeyframes = false, endMs = 0) {
+export function interpolateMeshVerts(keyframes, timeMs, loopKeyframes = false, endMs = 0) {
   if (!keyframes || keyframes.length === 0) return undefined;
   if (timeMs <= keyframes[0].time) return keyframes[0].value;
 
@@ -155,59 +155,6 @@ function interpolateMeshVerts(keyframes, timeMs, loopKeyframes = false, endMs = 
 }
 
 /**
- * Interpolate puppet pin positions between two keyframes.
- * Each keyframe value is [{id, x, y}, ...].
- * Pins are matched by id (not index) to be robust to future pin additions.
- */
-function interpolatePuppetPins(keyframes, timeMs, loopKeyframes = false, endMs = 0) {
-  if (!keyframes || keyframes.length === 0) return undefined;
-  if (timeMs <= keyframes[0].time) return keyframes[0].value;
-
-  if (timeMs >= keyframes[keyframes.length - 1].time) {
-    if (loopKeyframes && timeMs < endMs && keyframes.length > 0) {
-      const kLast = keyframes[keyframes.length - 1];
-      const kFirst = keyframes[0];
-      const t = (timeMs - kLast.time) / (endMs - kLast.time);
-      const te = evaluateEasing(t, kLast.easing);
-      return lerpPinArrays(kLast.value, kFirst.value, te);
-    }
-    return keyframes[keyframes.length - 1].value;
-  }
-
-  let lo = 0;
-  let hi = keyframes.length - 2;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (keyframes[mid + 1].time <= timeMs) lo = mid + 1;
-    else hi = mid;
-  }
-
-  const kA = keyframes[lo];
-  const kB = keyframes[lo + 1];
-  const t  = (timeMs - kA.time) / (kB.time - kA.time);
-  const te = evaluateEasing(t, kA.easing);
-  return lerpPinArrays(kA.value, kB.value, te);
-}
-
-/**
- * Linearly interpolate between two puppet pin arrays.
- * Pins are matched by id.
- * @private
- */
-function lerpPinArrays(pinsA, pinsB, t) {
-  const bMap = new Map(pinsB.map(p => [p.id, p]));
-  return pinsA.map(pA => {
-    const pB = bMap.get(pA.id);
-    if (!pB) return { id: pA.id, x: pA.x, y: pA.y };
-    return {
-      id: pA.id,
-      x: pA.x + (pB.x - pA.x) * t,
-      y: pA.y + (pB.y - pA.y) * t,
-    };
-  });
-}
-
-/**
  * Compute pose overrides for all tracks in an animation at the given time.
  *
  * @param {Object|null} animation  - single animation object (project.animations[i])
@@ -225,8 +172,6 @@ export function computePoseOverrides(animation, timeMs, loopKeyframes = false, e
     let value;
     if (track.property === 'mesh_verts') {
       value = interpolateMeshVerts(track.keyframes, timeMs, loopKeyframes, endMs);
-    } else if (track.property === 'puppet_pins') {
-      value = interpolatePuppetPins(track.keyframes, timeMs, loopKeyframes, endMs);
     } else {
       value = interpolateTrack(track.keyframes, timeMs, loopKeyframes, endMs);
     }
@@ -259,6 +204,50 @@ export const KEYFRAME_PROPS = ['x', 'y', 'rotation', 'scaleX', 'scaleY', 'opacit
 
 /** Prefix for blend shape influence track properties */
 export const BLEND_SHAPE_TRACK_PREFIX = 'blendShape:';
+
+/**
+ * Evaluate native parameter sliders against their bound animation tracks.
+ *
+ * Each parameter maps its current value (min…max) to a normalized position
+ * (0…1) along the bound track's keyframe range and evaluates the track there.
+ * The result is a poseOverrides-compatible Map that callers can merge with
+ * animation-keyframe overrides (animation wins on conflict).
+ *
+ * @param {Object[]} animations   - project.animations[]
+ * @param {Object[]} parameters   - project.parameters[]
+ * @param {Object}   paramValues  - { [paramId]: number } from parameterStore
+ * @returns {Map<string, Object>}  nodeId → { property: value, … }
+ */
+export function computeParameterDrivenOverrides(animations, parameters, paramValues) {
+  const overrides = new Map();
+  if (!parameters?.length) return overrides;
+
+  for (const param of parameters) {
+    const currentVal = paramValues[param.id] ?? param.default ?? 0;
+    for (const binding of (param.bindings ?? [])) {
+      const anim = animations?.find(a => a.id === binding.animationId);
+      if (!anim) continue;
+      const track = anim.tracks?.find(
+        t => t.nodeId === binding.nodeId && t.property === binding.property
+      );
+      if (!track?.keyframes?.length) continue;
+
+      const kfs = track.keyframes;
+      const range = param.max - param.min;
+      const t = range === 0 ? 0 : Math.max(0, Math.min(1, (currentVal - param.min) / range));
+      const timeMs = kfs[0].time + (kfs[kfs.length - 1].time - kfs[0].time) * t;
+
+      const value = track.property === 'mesh_verts'
+        ? interpolateMeshVerts(kfs, timeMs)
+        : interpolateTrack(kfs, timeMs);
+      if (value === undefined) continue;
+
+      if (!overrides.has(binding.nodeId)) overrides.set(binding.nodeId, {});
+      overrides.get(binding.nodeId)[track.property] = value;
+    }
+  }
+  return overrides;
+}
 
 /** Human-readable labels */
 export const PROP_LABELS = {

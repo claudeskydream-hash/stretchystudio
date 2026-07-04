@@ -25,6 +25,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { HelpIcon } from '@/components/ui/help-icon';
+import { WarpDeformerPanel } from '@/components/inspector/WarpDeformerPanel';
 import {
   Dialog,
   DialogContent,
@@ -623,69 +624,6 @@ function MeshPanel({ node, onRemesh, onDeleteMesh }) {
   );
 }
 
-/* ── Puppet Warp Panel ────────────────────────────────────────────────────── */
-
-function PuppetWarpPanel({ node }) {
-  const setPuppetWarpEnabled = useProjectStore(s => s.setPuppetWarpEnabled);
-  const puppetPinEditMode = useEditorStore(s => s.puppetPinEditMode);
-  const puppetPinPartId = useEditorStore(s => s.puppetPinPartId);
-  const enterPuppetPinEditMode = useEditorStore(s => s.enterPuppetPinEditMode);
-  const exitPuppetPinEditMode = useEditorStore(s => s.exitPuppetPinEditMode);
-
-  if (!node || node.type !== 'part' || !node.mesh) return null;
-
-  const isEnabled = node.puppetWarp?.enabled ?? false;
-  const pins = node.puppetWarp?.pins ?? [];
-  const isEditing = puppetPinEditMode && puppetPinPartId === node.id;
-
-  const handleToggle = (on) => {
-    setPuppetWarpEnabled(node.id, on);
-    if (!on && isEditing) exitPuppetPinEditMode();
-  };
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <SectionTitle>Puppet Warp</SectionTitle>
-        <Switch
-          checked={isEnabled}
-          onCheckedChange={handleToggle}
-          className="scale-75 origin-right"
-        />
-      </div>
-
-      {isEnabled && (
-        <>
-          <Row label="Pins">
-            <span className="text-xs tabular-nums">{pins.length}</span>
-          </Row>
-
-          {isEditing ? (
-            <div className="space-y-1.5">
-              <div className="rounded bg-primary/10 border border-primary/30 px-2 py-1.5 text-xs text-primary">
-                Click canvas to place pins. Right-click a pin to remove it.
-              </div>
-              <Button
-                size="sm" variant="outline" className="w-full h-7 text-xs"
-                onClick={exitPuppetPinEditMode}
-              >
-                Done Placing Pins
-              </Button>
-            </div>
-          ) : (
-            <Button
-              size="sm" variant="outline" className="w-full h-7 text-xs"
-              onClick={() => enterPuppetPinEditMode(node.id)}
-            >
-              Edit Pins
-            </Button>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
 /* ── Shape Keys Panel ─────────────────────────────────────────────────────── */
 
 function ShapeKeysPanel({ node }) {
@@ -921,11 +859,15 @@ export function Inspector({ onRemesh, onDeleteMesh }) {
               {effectiveNode.mesh && (
                 <>
                   <Separator />
-                  <PuppetWarpPanel node={effectiveNode} />
-                  <Separator />
                   <ShapeKeysPanel node={effectiveNode} />
                 </>
               )}
+            </>
+          )}
+          {effectiveNode.type === 'warpDeformer' && (
+            <>
+              <Separator />
+              <WarpDeformerPanel node={effectiveNode} />
             </>
           )}
         </>

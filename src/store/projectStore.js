@@ -51,12 +51,8 @@ export const useProjectStore = create((set) => ({
         transform:  { x, y, rotation, scaleX, scaleY, pivotX, pivotY },
         meshOpts:   { alphaThreshold, smoothPasses, gridSpacing, edgePadding, numEdgePoints } | null,
         mesh:       { vertices, uvs, triangles, edgeIndices } | null,
-        blendShapes: [{ id, name, deltas: [{dx, dy}], pinDeltas: [{pinId, dx, dy}] | null }] | null,
+        blendShapes: [{ id, name, deltas: [{dx, dy}] }] | null,
         blendShapeValues: { [shapeId]: number (0–1) },             // staging-mode influences
-        puppetWarp: {
-          enabled: boolean,
-          pins: [{ id, restX, restY, x, y }],  // image-space coords; x/y = current, rest = original
-        } | null,
       }
 
       Node schema (type === 'group'):
@@ -74,6 +70,7 @@ export const useProjectStore = create((set) => ({
     */
     parameters: [],
     physics_groups: [],
+    physicsRules: [],   // editable physics pendulum rules (PhysicsRule[])
     animations: [],
   },
 
@@ -103,6 +100,31 @@ export const useProjectStore = create((set) => ({
   }),
 
   setHasUnsavedChanges: (val) => set({ hasUnsavedChanges: val }),
+
+  /**
+   * Create a warp deformer node (acts like a group that can deform children).
+   * Grid control points are stored as mesh_verts animation tracks on this node.
+   */
+  createWarpDeformer: (name) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    state.project.nodes.push({
+      id:        uid(),
+      type:      'warpDeformer',
+      name:      name ?? 'Warp Deformer',
+      parent:    null,
+      transform: DEFAULT_TRANSFORM(),
+      visible:   true,
+      opacity:   1,
+      col:       2,
+      row:       2,
+      gridX:     0,
+      gridY:     0,
+      gridW:     200,
+      gridH:     200,
+      parameterId: null,
+    });
+    state.versionControl.transformVersion++;
+  })),
 
   /** Create a new empty group node */
   createGroup: (name) => set(produce((state) => {
@@ -154,6 +176,90 @@ export const useProjectStore = create((set) => ({
   deleteAnimation: (id) => set(produce((state) => {
     state.hasUnsavedChanges = true;
     state.project.animations = state.project.animations.filter(a => a.id !== id);
+  })),
+
+  // ── Parameter CRUD ──────────────────────────────────────────────────────────
+  /*
+    Parameter schema:
+    {
+      id:       string,
+      name:     string,
+      min:      number,   // slider minimum
+      max:      number,   // slider maximum
+      default:  number,   // rest value
+      bindings: [{ animationId, nodeId, property }]
+    }
+    Runtime currentValue is NOT persisted — stored in parameterStore.
+  */
+
+  createParameter: (partial = {}) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    state.project.parameters.push({
+      id:       uid(),
+      name:     `Param${state.project.parameters.length + 1}`,
+      min:      -1,
+      max:      1,
+      default:  0,
+      bindings: [],
+      ...partial,
+    });
+  })),
+
+  updateParameter: (id, partial) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    const param = state.project.parameters.find(p => p.id === id);
+    if (param) Object.assign(param, partial);
+  })),
+
+  deleteParameter: (id) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    state.project.parameters = state.project.parameters.filter(p => p.id !== id);
+  })),
+
+  addParameterBinding: (paramId, binding) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    const param = state.project.parameters.find(p => p.id === paramId);
+    if (param) {
+      if (!param.bindings) param.bindings = [];
+      param.bindings.push(binding);
+    }
+  })),
+
+  removeParameterBinding: (paramId, bindingIndex) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    const param = state.project.parameters.find(p => p.id === paramId);
+    if (param?.bindings) param.bindings.splice(bindingIndex, 1);
+  })),
+
+  // ── Physics Rules CRUD ──────────────────────────────────────────────────────
+  // Rules follow the PhysicsRule schema from src/io/live2d/cmo3/physics.js.
+  // When physicsRules[] is non-empty the exporter uses it instead of PHYSICS_RULES.
+
+  setPhysicsRules: (rules) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    state.project.physicsRules = rules;
+  })),
+
+  createPhysicsRule: (rule) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    state.project.physicsRules.push(rule);
+  })),
+
+  updatePhysicsRule: (id, partial) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    const rule = state.project.physicsRules.find(r => r.id === id);
+    if (rule) Object.assign(rule, partial);
+  })),
+
+  deletePhysicsRule: (id) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    state.project.physicsRules = state.project.physicsRules.filter(r => r.id !== id);
+  })),
+
+  reorderPhysicsRules: (orderedIds) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    const byId = new Map(state.project.physicsRules.map(r => [r.id, r]));
+    state.project.physicsRules = orderedIds.map(id => byId.get(id)).filter(Boolean);
   })),
 
   /** Create a new blend shape on a part node */
@@ -215,6 +321,7 @@ export const useProjectStore = create((set) => ({
       state.project.nodes    = [];
       state.project.parameters = [];
       state.project.physics_groups = [];
+      state.project.physicsRules = [];
       state.project.animations = [];
       state.versionControl.geometryVersion++;
       state.versionControl.transformVersion++;
@@ -238,12 +345,29 @@ export const useProjectStore = create((set) => ({
       for (const node of nodes) {
         if (node.blendShapes === undefined) node.blendShapes = [];
         if (node.blendShapeValues === undefined) node.blendShapeValues = {};
-        if (node.puppetWarp === undefined) node.puppetWarp = null;
+        if (node.type === 'warpDeformer') {
+          if (node.col === undefined)  node.col  = 2;
+          if (node.row === undefined)  node.row  = 2;
+          if (node.gridW === undefined) node.gridW = 200;
+          if (node.gridH === undefined) node.gridH = 200;
+          if (node.gridX === undefined) node.gridX = 0;
+          if (node.gridY === undefined) node.gridY = 0;
+          if (node.parameterId === undefined) node.parameterId = null;
+        }
       }
       state.project.nodes = nodes;
-      state.project.animations = projectData.animations ?? [];
-      state.project.parameters = projectData.parameters ?? [];
+      const animations = projectData.animations ?? [];
+      for (const anim of animations) {
+        anim.tracks = (anim.tracks ?? []).filter(t => t.property !== 'puppet_pins');
+      }
+      state.project.animations = animations;
+      const parameters = projectData.parameters ?? [];
+      for (const p of parameters) {
+        if (!p.bindings) p.bindings = [];
+      }
+      state.project.parameters = parameters;
       state.project.physics_groups = projectData.physics_groups ?? [];
+      state.project.physicsRules = projectData.physicsRules ?? [];
       state.versionControl.geometryVersion++;
       state.versionControl.transformVersion++;
       state.versionControl.textureVersion++;
@@ -255,51 +379,6 @@ export const useProjectStore = create((set) => ({
   updateCanvas: (partial) => set(produce((state) => {
     state.hasUnsavedChanges = true;
     Object.assign(state.project.canvas, partial);
-  })),
-
-  /** Enable or disable puppet warp on a part node */
-  setPuppetWarpEnabled: (nodeId, enabled) => set(produce((state) => {
-    state.hasUnsavedChanges = true;
-    const node = state.project.nodes.find(n => n.id === nodeId);
-    if (!node) return;
-    if (enabled && !node.puppetWarp) {
-      node.puppetWarp = { enabled: true, pins: [] };
-    } else if (node.puppetWarp) {
-      node.puppetWarp.enabled = enabled;
-    }
-    state.versionControl.geometryVersion++;
-  })),
-
-  /** Add a pin at image-space rest position */
-  addPuppetPin: (nodeId, restX, restY) => set(produce((state) => {
-    state.hasUnsavedChanges = true;
-    const node = state.project.nodes.find(n => n.id === nodeId);
-    if (!node?.puppetWarp) return;
-    node.puppetWarp.pins.push({
-      id: uid(),
-      restX, restY,
-      x: restX, y: restY,
-    });
-    state.versionControl.geometryVersion++;
-  })),
-
-  /** Remove a pin by id */
-  removePuppetPin: (nodeId, pinId) => set(produce((state) => {
-    state.hasUnsavedChanges = true;
-    const node = state.project.nodes.find(n => n.id === nodeId);
-    if (!node?.puppetWarp) return;
-    node.puppetWarp.pins = node.puppetWarp.pins.filter(p => p.id !== pinId);
-    state.versionControl.geometryVersion++;
-  })),
-
-  /** Move a pin's current position (staging mode — bakes directly into node) */
-  setPuppetPinPosition: (nodeId, pinId, x, y) => set(produce((state) => {
-    state.hasUnsavedChanges = true;
-    const node = state.project.nodes.find(n => n.id === nodeId);
-    const pin = node?.puppetWarp?.pins?.find(p => p.id === pinId);
-    if (!pin) return;
-    pin.x = x; pin.y = y;
-    state.versionControl.geometryVersion++;
   })),
 
   /**
