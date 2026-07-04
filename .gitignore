@@ -69,3 +69,9 @@ frames */
 
 # Large downloaded ML models (exceed GitHub 100MB limit)
 public/models/
+
+# Vendored ONNX Runtime wasm assets (large, restore via install/copy step)
+public/vendor/onnxruntime-web/
+
+# Stray local download staging folder
+DownLoad/

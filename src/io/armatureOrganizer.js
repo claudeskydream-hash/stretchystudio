@@ -21,6 +21,8 @@ async function _ensureOrt() {
     // Support both namespace and default export styles depending on bundler behavior
     const instance = module.env ? module : (module.default || module);
     
+    // Load ONNX Runtime wasm assets from Vite's local public directory.
+    instance.env.wasm.wasmPaths = '/vendor/onnxruntime-web/';
     return instance;
   })();
   
